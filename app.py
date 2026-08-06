@@ -1355,6 +1355,46 @@ def dialog():
             )
             if nutrition_summary:
                 response_text += "\n" + nutrition_summary
+
+        # ── 结果验证（拦截违规菜品）──
+        t_verify_start = time.perf_counter()
+        if recommendations:
+            verifier = get_verifier()
+            # 构建验证用的用户档案
+            verify_profile = {'allergies': [], 'diseases': [], 'special_groups': []}
+            if user_id and str(user_id).isdigit() and 1 <= int(user_id) <= 50:
+                verify_profile = engine.user_profiles.get(user_id, verify_profile)
+            elif user_ids:
+                # 多人场景：合并所有约束
+                for uid in user_ids:
+                    if str(uid).isdigit() and 1 <= int(uid) <= 50:
+                        up = engine.user_profiles.get(uid, {})
+                        verify_profile['allergies'].extend(up.get('allergies', []))
+                        verify_profile['diseases'].extend(up.get('diseases', []))
+                        verify_profile['special_groups'].extend(up.get('special_groups', []))
+                verify_profile['allergies'] = list(set(verify_profile['allergies']))
+                verify_profile['diseases'] = list(set(verify_profile['diseases']))
+                verify_profile['special_groups'] = list(set(verify_profile['special_groups']))
+            else:
+                # 非预置用户：从对话偏好中获取过敏信息
+                verify_profile['allergies'] = dm.user_preferences.get('allergies', [])
+            verification_report = verifier.verify(recommendations, verify_profile)
+            # 硬约束违规：从推荐列表中移除违规菜品并提示用户
+            if not verification_report['all_passed']:
+                failed_checks = [c for c in verification_report['checks'] if c['status'] == 'FAILED']
+                violation_recipes = set()
+                for c in failed_checks:
+                    for v in c.get('violations', []):
+                        violation_recipes.add(v.get('recipe', ''))
+                    for m in c.get('missing', []):
+                        violation_recipes.add(m)
+                # 移除违规/幻觉菜品
+                if violation_recipes:
+                    recommendations = [r for r in recommendations if r.get('name', '') not in violation_recipes]
+                    if not recommendations:
+                        response_text += ("\n\n⚠️ 很抱歉，当前推荐未通过安全检测，已为您重新筛选。"
+                                          "请告诉我更多偏好，帮您找到合适的菜品～")
+        t_verify_dialog = round((time.perf_counter() - t_verify_start) * 1000, 2)
         
         t_total = round((time.perf_counter() - t_request_start) * 1000, 2)
         timing_data = {

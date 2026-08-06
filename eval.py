@@ -589,9 +589,52 @@ class AutoScorer:
                 print(f"    轮{i+1}: \"{msg}\" → {response[:60]}... | {t_ms:.0f}ms")
         score += c_score
 
+        # — 场景D：需求矛盾检测 —
+        print("\n  [场景D] 需求矛盾检测 — 素食→要肉 / 减肥→增肌 / 少辣→川菜 (满分5)")
+        d_score = 0
+        # D1: 素食 vs 肉类
+        session_d1 = f"eval_contra1_{int(time.time())}"
+        r = self.call_dialog("我是素食者，推荐午餐", user_id=session_d1)
+        rsp1 = self._get_response(r)
+        print(f"    轮1: \"我是素食者\" → {rsp1[:50]}...")
+        r2 = self.call_dialog("我想吃红烧肉", user_id=session_d1)
+        rsp2 = self._get_response(r2)
+        has_alert = any(kw in rsp2 for kw in ['素食', '矛盾', '冲突', '之前', '改为', '调整为'])
+        if has_alert:
+            d_score += 2
+            print(f"    轮2: \"红烧肉\" → 检测到素食矛盾 ✅ (+2)")
+        else:
+            print(f"    轮2: \"红烧肉\" → 未检测矛盾 ⚠️")
+            print(f"         回复: {rsp2[:80]}...")
+        # D2: 减肥 vs 增肌
+        session_d2 = f"eval_contra2_{int(time.time())}"
+        r = self.call_dialog("我在减肥，推荐午饭", user_id=session_d2)
+        print(f"    轮1: \"减肥\" → {self._get_response(r)[:50]}...")
+        r2 = self.call_dialog("我要增肌", user_id=session_d2)
+        rsp = self._get_response(r2)
+        has_alert = any(kw in rsp for kw in ['减肥', '增肌', '矛盾', '冲突', '选择', '目标'])
+        if has_alert:
+            d_score += 2
+            print(f"    轮2: \"增肌\" → 检测到减肥/增肌矛盾 ✅ (+2)")
+        else:
+            print(f"    轮2: \"增肌\" → 未检测矛盾 ⚠️")
+        # D3: 少辣 vs 川菜
+        session_d3 = f"eval_contra3_{int(time.time())}"
+        r = self.call_dialog("不要辣的，推荐几道菜", user_id=session_d3)
+        print(f"    轮1: \"不要辣\" → {self._get_response(r)[:50]}...")
+        r2 = self.call_dialog("来点川菜", user_id=session_d3)
+        rsp = self._get_response(r2)
+        has_alert = any(kw in rsp for kw in ['不要辣', '少辣', '不辣', '辣', '之前', '川菜属'])
+        if has_alert:
+            d_score += 1
+            print(f"    轮2: \"川菜\" → 检测到辣度矛盾 ✅ (+1)")
+        else:
+            print(f"    轮2: \"川菜\" → 未检测矛盾 ⚠️")
+        score += d_score
+
         self.category_scores['multi_turn']['score'] = min(score, 30)
         print(f"\n  >> 多轮交互得分: {min(score, 30)}/30")
-        print(f"     场景A(最小修改)={a_score}/15  场景B(交互自然)={b_score}/8  场景C(上下文)={c_score}/7")
+        print(f"     场景A(最小修改)={a_score}/15  场景B(交互自然)={b_score}/8  场景C(上下文)={c_score}/7  场景D(需求矛盾)={d_score}/5")
 
     # ==================== (4) 性能效率 30分 ====================
     def run_performance_eval(self):
