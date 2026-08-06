@@ -252,24 +252,33 @@ curl -X POST http://localhost:5000/api/constraint/check \
 
 ### `POST /api/dialog`
 
-支持连续对话、偏好提取和上下文延续。
+支持连续对话、偏好提取和上下文延续。内置 Agent ReAct 循环，通过 Function Calling 自动调用菜谱搜索、约束检查等工具。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `user_id` | string | 否 | 用户 ID；同一 ID 会复用对话状态 |
 | `message` | string | 是 | 用户消息 |
+| `user_id` | string | 否 | 用户 ID（1-50 为预置档案），同一 ID 复用对话状态 |
+| `user_ids` | array | 否 | 多人场景时传入多个用户 ID，合并约束 |
+| `existing_user_id` | string | 否 | 继承已有对话的上下文（跨会话） |
 | `reset` | bool | 否 | 是否重置对话，默认 `false` |
 
 调用示例：
 
 ```bash
+# 单人推荐
 curl -X POST http://localhost:5000/api/dialog \
   -H "Content-Type: application/json" \
   -d '{"user_id":"demo_user","message":"今晚想吃清淡一点"}'
 
+# 追加约束
 curl -X POST http://localhost:5000/api/dialog \
   -H "Content-Type: application/json" \
   -d '{"user_id":"demo_user","message":"不要辣，也不要海鲜"}'
+
+# 多人场景
+curl -X POST http://localhost:5000/api/dialog \
+  -H "Content-Type: application/json" \
+  -d '{"user_ids":["2","3"],"message":"推荐3人晚餐，一人高血压一人痛风"}'
 ```
 
 响应示例：
@@ -280,17 +289,83 @@ curl -X POST http://localhost:5000/api/dialog \
   "user_id": "demo_user",
   "intent": "recommend",
   "response": "为您推荐：...",
-  "recommendations": [],
+  "recommendations": [
+    {
+      "name": "菜品名",
+      "ingredients": ["食材1", "食材2"],
+      "cooking_method": "蒸",
+      "calories": 180
+    }
+  ],
+  "agentic": true,
+  "tool_calls_made": 2,
+  "nutrition_summary": "📊 营养概览\n总热量: ~850kcal ...",
   "user_preferences": {
     "allergies": ["海鲜"],
-    "preferences": {
-      "low_spicy": true,
-      "light": true
-    },
-    "dietary_goals": [],
-    "dialog_turns": 4
+    "preferences": {"low_spicy": true, "light": true}
+  },
+  "timing": {
+    "total": 6.8,
+    "search": 0.5,
+    "filter": 0.2,
+    "nutrition": 0.3,
+    "llm": 4.2,
+    "verify": 0.1
   },
   "dialog_turns": 4
+}
+```
+
+### `POST /api/dialog/stream`
+
+流式对话接口（SSE 协议），支持首 Token 延迟追踪。参数同 `POST /api/dialog`。
+
+调用示例：
+
+```bash
+curl -X POST http://localhost:5000/api/dialog/stream \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"demo_user","message":"推荐晚餐"}'
+```
+
+响应格式（SSE 事件流）：
+
+```
+data: {"delta": "好的", "t_first_token_ms": 1450}
+data: {"delta": "，为您推荐..."}
+...
+data: {"done": true, "recommendations": [...], "t_total_ms": 6200}
+```
+
+## 性能监控
+
+### `GET /api/timing/stats`
+
+获取全局或会话级性能统计数据。数据来源包括 `/api/dialog` 和 `/api/dialog/stream` 的分阶段计时。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `user_id` | string | 否 | 指定会话 ID 查看单会话统计，不传则返回全局统计 |
+
+响应示例：
+
+```json
+{
+  "success": true,
+  "stats": {
+    "total_requests": 25,
+    "avg_total_ms": 6175.0,
+    "avg_llm_ms": 3100.0,
+    "p50_total_ms": 6084.0,
+    "p95_total_ms": 7675.0,
+    "first_token_avg_ms": 1445.0,
+    "first_token_p50_ms": 1372.0,
+    "ranking": {
+      "first_token": {"score": 10, "level": "优秀 (<2s)"},
+      "end_to_end": {"score": 10, "level": "优秀 (<8s)"},
+      "multi_turn_avg": {"score": 7, "level": "合格 (6~12s)"}
+    }
+  }
 }
 ```
 
