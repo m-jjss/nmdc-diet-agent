@@ -1,0 +1,1476 @@
+[
+  {
+    "id": 1,
+    "gender": "男",
+    "age": 28,
+    "activity_level": "中",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "偏辣",
+    "allergies": [
+      "海鲜"
+    ],
+    "health_needs": [
+      "增肌",
+      "补充蛋白质"
+    ],
+    "height_cm": 171.1,
+    "weight_kg": 68.2,
+    "bmi": 23.3,
+    "medical_data": {},
+    "calorie_target": 2505
+  },
+  {
+    "id": 2,
+    "gender": "女",
+    "age": 32,
+    "activity_level": "低",
+    "special_groups": [
+      "孕妇"
+    ],
+    "pregnancy_period": "22周",
+    "taste_preference": "酸甜",
+    "allergies": [],
+    "health_needs": [
+      "补钙",
+      "补铁",
+      "均衡营养"
+    ],
+    "height_cm": 160.4,
+    "weight_kg": 64.1,
+    "bmi": 24.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.4,
+      "血压_mmHg": "116/81",
+      "总胆固醇_mmol/L": 4.56,
+      "甘油三酯_mmol/L": 1.02,
+      "低密度脂蛋白_mmol/L": 2.62,
+      "高密度脂蛋白_mmol/L": 1.67,
+      "尿酸_umol/L": 261
+    },
+    "calorie_target": 1587
+  },
+  {
+    "id": 3,
+    "gender": "男",
+    "age": 45,
+    "activity_level": "高",
+    "special_groups": [
+      "高血压",
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "花生"
+    ],
+    "health_needs": [
+      "降血压",
+      "控糖",
+      "护心"
+    ],
+    "height_cm": 180.1,
+    "weight_kg": 78.2,
+    "bmi": 24.1,
+    "medical_data": {
+      "空腹血糖_mmol/L": 7.3,
+      "血压_mmHg": "146/93",
+      "总胆固醇_mmol/L": 4.63,
+      "甘油三酯_mmol/L": 1.16,
+      "低密度脂蛋白_mmol/L": 2.58,
+      "高密度脂蛋白_mmol/L": 1.29,
+      "尿酸_umol/L": 271
+    },
+    "calorie_target": 2911
+  },
+  {
+    "id": 4,
+    "gender": "女",
+    "age": 26,
+    "activity_level": "中",
+    "special_groups": [
+      "备孕"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "偏甜",
+    "allergies": [
+      "牛奶"
+    ],
+    "health_needs": [
+      "补气血",
+      "调理月经",
+      "养脾胃"
+    ],
+    "height_cm": 156.5,
+    "weight_kg": 54.1,
+    "bmi": 22.1,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.4,
+      "血压_mmHg": "122/71",
+      "总胆固醇_mmol/L": 4.96,
+      "甘油三酯_mmol/L": 1.42,
+      "低密度脂蛋白_mmol/L": 3.01,
+      "高密度脂蛋白_mmol/L": 1.5,
+      "尿酸_umol/L": 277
+    },
+    "calorie_target": 1903
+  },
+  {
+    "id": 5,
+    "gender": "男",
+    "age": 52,
+    "activity_level": "低",
+    "special_groups": [
+      "高尿酸",
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [],
+    "health_needs": [
+      "降尿酸",
+      "降压",
+      "护肾"
+    ],
+    "height_cm": 164.6,
+    "weight_kg": 69.6,
+    "bmi": 25.7,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.7,
+      "血压_mmHg": "143/94",
+      "总胆固醇_mmol/L": 4.49,
+      "甘油三酯_mmol/L": 1.44,
+      "低密度脂蛋白_mmol/L": 2.61,
+      "高密度脂蛋白_mmol/L": 1.36,
+      "尿酸_umol/L": 498
+    },
+    "calorie_target": 1763
+  },
+  {
+    "id": 6,
+    "gender": "女",
+    "age": 38,
+    "activity_level": "中",
+    "special_groups": [
+      "哺乳期"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "海鲜",
+      "鸡蛋"
+    ],
+    "health_needs": [
+      "催乳",
+      "补钙",
+      "补铁"
+    ],
+    "height_cm": 161.2,
+    "weight_kg": 56.9,
+    "bmi": 21.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.4,
+      "血压_mmHg": "112/79",
+      "总胆固醇_mmol/L": 4.55,
+      "甘油三酯_mmol/L": 1.04,
+      "低密度脂蛋白_mmol/L": 2.45,
+      "高密度脂蛋白_mmol/L": 1.29,
+      "尿酸_umol/L": 316
+    },
+    "calorie_target": 1899
+  },
+  {
+    "id": 7,
+    "gender": "男",
+    "age": 24,
+    "activity_level": "高",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "重口味",
+    "allergies": [],
+    "health_needs": [
+      "增肌",
+      "提高耐力"
+    ],
+    "height_cm": 163.3,
+    "weight_kg": 58.1,
+    "bmi": 21.8,
+    "medical_data": {},
+    "calorie_target": 2564
+  },
+  {
+    "id": 8,
+    "gender": "女",
+    "age": 29,
+    "activity_level": "低",
+    "special_groups": [
+      "孕妇"
+    ],
+    "pregnancy_period": "16周",
+    "taste_preference": "酸辣",
+    "allergies": [
+      "芒果"
+    ],
+    "health_needs": [
+      "补叶酸",
+      "补铁",
+      "防便秘"
+    ],
+    "height_cm": 161.4,
+    "weight_kg": 70.1,
+    "bmi": 26.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.1,
+      "血压_mmHg": "124/72",
+      "总胆固醇_mmol/L": 4.15,
+      "甘油三酯_mmol/L": 1.36,
+      "低密度脂蛋白_mmol/L": 2.17,
+      "高密度脂蛋白_mmol/L": 1.51,
+      "尿酸_umol/L": 362
+    },
+    "calorie_target": 1684
+  },
+  {
+    "id": 9,
+    "gender": "男",
+    "age": 60,
+    "activity_level": "低",
+    "special_groups": [
+      "高血压",
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "虾"
+    ],
+    "health_needs": [
+      "降压",
+      "控糖",
+      "护血管"
+    ],
+    "height_cm": 158.6,
+    "weight_kg": 77.0,
+    "bmi": 30.6,
+    "medical_data": {
+      "空腹血糖_mmol/L": 7.4,
+      "血压_mmHg": "141/89",
+      "总胆固醇_mmol/L": 4.32,
+      "甘油三酯_mmol/L": 1.48,
+      "低密度脂蛋白_mmol/L": 2.93,
+      "高密度脂蛋白_mmol/L": 1.37,
+      "尿酸_umol/L": 379
+    },
+    "calorie_target": 1759
+  },
+  {
+    "id": 10,
+    "gender": "女",
+    "age": 41,
+    "activity_level": "中",
+    "special_groups": [
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "少糖",
+    "allergies": [],
+    "health_needs": [
+      "控糖",
+      "减脂",
+      "调理内分泌"
+    ],
+    "height_cm": 150,
+    "weight_kg": 47.9,
+    "bmi": 21.3,
+    "medical_data": {
+      "空腹血糖_mmol/L": 8.7,
+      "血压_mmHg": "110/80",
+      "总胆固醇_mmol/L": 4.85,
+      "甘油三酯_mmol/L": 1.07,
+      "低密度脂蛋白_mmol/L": 3.0,
+      "高密度脂蛋白_mmol/L": 1.18,
+      "尿酸_umol/L": 371
+    },
+    "calorie_target": 1628
+  },
+  {
+    "id": 11,
+    "gender": "男",
+    "age": 33,
+    "activity_level": "中",
+    "special_groups": [
+      "高尿酸"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "豆制品"
+    ],
+    "health_needs": [
+      "降尿酸",
+      "护肝",
+      "减脂"
+    ],
+    "height_cm": 172.3,
+    "weight_kg": 67.4,
+    "bmi": 22.7,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.6,
+      "血压_mmHg": "118/78",
+      "总胆固醇_mmol/L": 4.51,
+      "甘油三酯_mmol/L": 0.91,
+      "低密度脂蛋白_mmol/L": 2.68,
+      "高密度脂蛋白_mmol/L": 1.69,
+      "尿酸_umol/L": 480
+    },
+    "calorie_target": 2465
+  },
+  {
+    "id": 12,
+    "gender": "女",
+    "age": 23,
+    "activity_level": "低",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "甜食",
+    "allergies": [
+      "坚果"
+    ],
+    "health_needs": [
+      "补气血",
+      "美容养颜"
+    ],
+    "height_cm": 165.8,
+    "weight_kg": 71.5,
+    "bmi": 26.0,
+    "medical_data": {},
+    "calorie_target": 1770
+  },
+  {
+    "id": 13,
+    "gender": "男",
+    "age": 47,
+    "activity_level": "高",
+    "special_groups": [
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [],
+    "health_needs": [
+      "降压",
+      "补肾",
+      "改善睡眠"
+    ],
+    "height_cm": 172.3,
+    "weight_kg": 76.9,
+    "bmi": 25.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.5,
+      "血压_mmHg": "142/96",
+      "总胆固醇_mmol/L": 5.17,
+      "甘油三酯_mmol/L": 0.93,
+      "低密度脂蛋白_mmol/L": 2.77,
+      "高密度脂蛋白_mmol/L": 1.48,
+      "尿酸_umol/L": 327
+    },
+    "calorie_target": 2787
+  },
+  {
+    "id": 14,
+    "gender": "女",
+    "age": 31,
+    "activity_level": "中",
+    "special_groups": [
+      "孕妇"
+    ],
+    "pregnancy_period": "30周",
+    "taste_preference": "偏咸",
+    "allergies": [
+      "螃蟹"
+    ],
+    "health_needs": [
+      "补钙",
+      "补铁",
+      "控制体重"
+    ],
+    "height_cm": 158.8,
+    "weight_kg": 78.2,
+    "bmi": 31,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.1,
+      "血压_mmHg": "116/81",
+      "总胆固醇_mmol/L": 5.19,
+      "甘油三酯_mmol/L": 1.45,
+      "低密度脂蛋白_mmol/L": 2.41,
+      "高密度脂蛋白_mmol/L": 1.46,
+      "尿酸_umol/L": 290
+    },
+    "calorie_target": 2260
+  },
+  {
+    "id": 15,
+    "gender": "男",
+    "age": 19,
+    "activity_level": "高",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "辣味",
+    "allergies": [
+      "鸡蛋"
+    ],
+    "health_needs": [
+      "增肌",
+      "促进生长"
+    ],
+    "height_cm": 168.9,
+    "weight_kg": 67.6,
+    "bmi": 23.7,
+    "medical_data": {},
+    "calorie_target": 2831
+  },
+  {
+    "id": 16,
+    "gender": "女",
+    "age": 36,
+    "activity_level": "低",
+    "special_groups": [
+      "哺乳期"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [],
+    "health_needs": [
+      "催乳",
+      "补气血",
+      "安神"
+    ],
+    "height_cm": 162.2,
+    "weight_kg": 71.3,
+    "bmi": 27.1,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.0,
+      "血压_mmHg": "112/78",
+      "总胆固醇_mmol/L": 4.74,
+      "甘油三酯_mmol/L": 1.01,
+      "低密度脂蛋白_mmol/L": 1.99,
+      "高密度脂蛋白_mmol/L": 1.75,
+      "尿酸_umol/L": 381
+    },
+    "calorie_target": 1662
+  },
+  {
+    "id": 17,
+    "gender": "男",
+    "age": 55,
+    "activity_level": "低",
+    "special_groups": [
+      "高血糖",
+      "高尿酸"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "无糖",
+    "allergies": [
+      "海鲜"
+    ],
+    "health_needs": [
+      "控糖",
+      "降尿酸",
+      "护肾"
+    ],
+    "height_cm": 165.3,
+    "weight_kg": 65.9,
+    "bmi": 24.1,
+    "medical_data": {
+      "空腹血糖_mmol/L": 8.6,
+      "血压_mmHg": "123/73",
+      "总胆固醇_mmol/L": 4.6,
+      "甘油三酯_mmol/L": 1.21,
+      "低密度脂蛋白_mmol/L": 3.31,
+      "高密度脂蛋白_mmol/L": 1.14,
+      "尿酸_umol/L": 445
+    },
+    "calorie_target": 1706
+  },
+  {
+    "id": 18,
+    "gender": "女",
+    "age": 27,
+    "activity_level": "中",
+    "special_groups": [
+      "备孕"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "偏酸",
+    "allergies": [
+      "牛奶"
+    ],
+    "health_needs": [
+      "补叶酸",
+      "养子宫",
+      "调理气血"
+    ],
+    "height_cm": 166.8,
+    "weight_kg": 57.3,
+    "bmi": 20.6,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.0,
+      "血压_mmHg": "113/73",
+      "总胆固醇_mmol/L": 4.55,
+      "甘油三酯_mmol/L": 0.94,
+      "低密度脂蛋白_mmol/L": 2.06,
+      "高密度脂蛋白_mmol/L": 1.42,
+      "尿酸_umol/L": 279
+    },
+    "calorie_target": 2045
+  },
+  {
+    "id": 19,
+    "gender": "男",
+    "age": 42,
+    "activity_level": "高",
+    "special_groups": [
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "花生"
+    ],
+    "health_needs": [
+      "降压",
+      "护心",
+      "减脂"
+    ],
+    "height_cm": 175.1,
+    "weight_kg": 55.2,
+    "bmi": 18,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.5,
+      "血压_mmHg": "157/88",
+      "总胆固醇_mmol/L": 5.46,
+      "甘油三酯_mmol/L": 1.73,
+      "低密度脂蛋白_mmol/L": 3.29,
+      "高密度脂蛋白_mmol/L": 1.22,
+      "尿酸_umol/L": 384
+    },
+    "calorie_target": 2486
+  },
+  {
+    "id": 20,
+    "gender": "女",
+    "age": 34,
+    "activity_level": "中",
+    "special_groups": [
+      "孕妇"
+    ],
+    "pregnancy_period": "12周",
+    "taste_preference": "酸甜",
+    "allergies": [],
+    "health_needs": [
+      "补叶酸",
+      "补铁",
+      "缓解孕吐"
+    ],
+    "height_cm": 150.1,
+    "weight_kg": 54.3,
+    "bmi": 24.1,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.2,
+      "血压_mmHg": "111/72",
+      "总胆固醇_mmol/L": 5.18,
+      "甘油三酯_mmol/L": 1.07,
+      "低密度脂蛋白_mmol/L": 2.9,
+      "高密度脂蛋白_mmol/L": 1.42,
+      "尿酸_umol/L": 368
+    },
+    "calorie_target": 1782
+  },
+  {
+    "id": 21,
+    "gender": "男",
+    "age": 50,
+    "activity_level": "低",
+    "special_groups": [
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "少油",
+    "allergies": [
+      "虾"
+    ],
+    "health_needs": [
+      "控糖",
+      "护肝",
+      "改善循环"
+    ],
+    "height_cm": 168.8,
+    "weight_kg": 57.6,
+    "bmi": 20.2,
+    "medical_data": {
+      "空腹血糖_mmol/L": 7.5,
+      "血压_mmHg": "125/72",
+      "总胆固醇_mmol/L": 4.18,
+      "甘油三酯_mmol/L": 1.54,
+      "低密度脂蛋白_mmol/L": 2.19,
+      "高密度脂蛋白_mmol/L": 1.32,
+      "尿酸_umol/L": 272
+    },
+    "calorie_target": 1663
+  },
+  {
+    "id": 22,
+    "gender": "女",
+    "age": 25,
+    "activity_level": "低",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "辣味",
+    "allergies": [
+      "芒果"
+    ],
+    "health_needs": [
+      "减脂",
+      "排毒"
+    ],
+    "height_cm": 153.9,
+    "weight_kg": 46.2,
+    "bmi": 19.5,
+    "medical_data": {},
+    "calorie_target": 1365
+  },
+  {
+    "id": 23,
+    "gender": "男",
+    "age": 39,
+    "activity_level": "中",
+    "special_groups": [
+      "高尿酸"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "豆类"
+    ],
+    "health_needs": [
+      "降尿酸",
+      "养肾",
+      "减重"
+    ],
+    "height_cm": 160.2,
+    "weight_kg": 66.5,
+    "bmi": 25.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.4,
+      "血压_mmHg": "117/79",
+      "总胆固醇_mmol/L": 4.67,
+      "甘油三酯_mmol/L": 1.22,
+      "低密度脂蛋白_mmol/L": 2.62,
+      "高密度脂蛋白_mmol/L": 1.47,
+      "尿酸_umol/L": 482
+    },
+    "calorie_target": 2288
+  },
+  {
+    "id": 24,
+    "gender": "女",
+    "age": 44,
+    "activity_level": "高",
+    "special_groups": [
+      "高血压",
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [],
+    "health_needs": [
+      "降压",
+      "控糖",
+      "调节血脂"
+    ],
+    "height_cm": 157.5,
+    "weight_kg": 54.8,
+    "bmi": 22.1,
+    "medical_data": {
+      "空腹血糖_mmol/L": 7.8,
+      "血压_mmHg": "149/95",
+      "总胆固醇_mmol/L": 5.15,
+      "甘油三酯_mmol/L": 0.87,
+      "低密度脂蛋白_mmol/L": 2.74,
+      "高密度脂蛋白_mmol/L": 1.8,
+      "尿酸_umol/L": 285
+    },
+    "calorie_target": 1986
+  },
+  {
+    "id": 25,
+    "gender": "男",
+    "age": 22,
+    "activity_level": "高",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "重油",
+    "allergies": [
+      "海鲜"
+    ],
+    "health_needs": [
+      "增肌",
+      "增加体重"
+    ],
+    "height_cm": 175.7,
+    "weight_kg": 75.6,
+    "bmi": 24.5,
+    "medical_data": {},
+    "calorie_target": 3017
+  },
+  {
+    "id": 26,
+    "gender": "女",
+    "age": 30,
+    "activity_level": "中",
+    "special_groups": [
+      "哺乳期"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "鸡蛋"
+    ],
+    "health_needs": [
+      "催乳",
+      "补钙",
+      "恢复体型"
+    ],
+    "height_cm": 150,
+    "weight_kg": 41.0,
+    "bmi": 18.2,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.6,
+      "血压_mmHg": "110/80",
+      "总胆固醇_mmol/L": 4.22,
+      "甘油三酯_mmol/L": 1.46,
+      "低密度脂蛋白_mmol/L": 3.11,
+      "高密度脂蛋白_mmol/L": 1.19,
+      "尿酸_umol/L": 289
+    },
+    "calorie_target": 1606
+  },
+  {
+    "id": 27,
+    "gender": "男",
+    "age": 58,
+    "activity_level": "低",
+    "special_groups": [
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "少盐",
+    "allergies": [],
+    "health_needs": [
+      "降压",
+      "护心",
+      "改善便秘"
+    ],
+    "height_cm": 179.6,
+    "weight_kg": 69.0,
+    "bmi": 21.4,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.1,
+      "血压_mmHg": "146/93",
+      "总胆固醇_mmol/L": 4.39,
+      "甘油三酯_mmol/L": 1.43,
+      "低密度脂蛋白_mmol/L": 2.47,
+      "高密度脂蛋白_mmol/L": 1.44,
+      "尿酸_umol/L": 273
+    },
+    "calorie_target": 1833
+  },
+  {
+    "id": 28,
+    "gender": "女",
+    "age": 33,
+    "activity_level": "低",
+    "special_groups": [
+      "备孕"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "甜食",
+    "allergies": [
+      "坚果"
+    ],
+    "health_needs": [
+      "补气血",
+      "暖宫",
+      "调节激素"
+    ],
+    "height_cm": 165.3,
+    "weight_kg": 65.3,
+    "bmi": 23.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 4.8,
+      "血压_mmHg": "118/70",
+      "总胆固醇_mmol/L": 4.88,
+      "甘油三酯_mmol/L": 1.44,
+      "低密度脂蛋白_mmol/L": 2.17,
+      "高密度脂蛋白_mmol/L": 1.62,
+      "尿酸_umol/L": 369
+    },
+    "calorie_target": 1632
+  },
+  {
+    "id": 29,
+    "gender": "男",
+    "age": 46,
+    "activity_level": "中",
+    "special_groups": [
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "无糖",
+    "allergies": [
+      "花生"
+    ],
+    "health_needs": [
+      "控糖",
+      "护眼",
+      "减脂"
+    ],
+    "height_cm": 169.3,
+    "weight_kg": 63.1,
+    "bmi": 22.0,
+    "medical_data": {
+      "空腹血糖_mmol/L": 7.9,
+      "血压_mmHg": "114/78",
+      "总胆固醇_mmol/L": 4.87,
+      "甘油三酯_mmol/L": 1.23,
+      "低密度脂蛋白_mmol/L": 2.16,
+      "高密度脂蛋白_mmol/L": 1.36,
+      "尿酸_umol/L": 270
+    },
+    "calorie_target": 2269
+  },
+  {
+    "id": 30,
+    "gender": "女",
+    "age": 29,
+    "activity_level": "高",
+    "special_groups": [
+      "孕妇"
+    ],
+    "pregnancy_period": "26周",
+    "taste_preference": "偏辣",
+    "allergies": [
+      "蟹"
+    ],
+    "health_needs": [
+      "补铁",
+      "补钙",
+      "控制血糖"
+    ],
+    "height_cm": 158.0,
+    "weight_kg": 62.4,
+    "bmi": 25.0,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.5,
+      "血压_mmHg": "123/79",
+      "总胆固醇_mmol/L": 5.1,
+      "甘油三酯_mmol/L": 1.04,
+      "低密度脂蛋白_mmol/L": 2.03,
+      "高密度脂蛋白_mmol/L": 1.66,
+      "尿酸_umol/L": 305
+    },
+    "calorie_target": 2251
+  },
+  {
+    "id": 31,
+    "gender": "男",
+    "age": 21,
+    "activity_level": "高",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "辣味",
+    "allergies": [],
+    "health_needs": [
+      "增肌",
+      "提高爆发力"
+    ],
+    "height_cm": 174.8,
+    "weight_kg": 73.6,
+    "bmi": 24.1,
+    "medical_data": {},
+    "calorie_target": 2981
+  },
+  {
+    "id": 32,
+    "gender": "女",
+    "age": 48,
+    "activity_level": "低",
+    "special_groups": [
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "海鲜"
+    ],
+    "health_needs": [
+      "降压",
+      "补钙",
+      "安神"
+    ],
+    "height_cm": 159.1,
+    "weight_kg": 59.5,
+    "bmi": 23.5,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.0,
+      "血压_mmHg": "154/93",
+      "总胆固醇_mmol/L": 4.53,
+      "甘油三酯_mmol/L": 1.6,
+      "低密度脂蛋白_mmol/L": 2.42,
+      "高密度脂蛋白_mmol/L": 1.12,
+      "尿酸_umol/L": 309
+    },
+    "calorie_target": 1426
+  },
+  {
+    "id": 33,
+    "gender": "男",
+    "age": 37,
+    "activity_level": "中",
+    "special_groups": [
+      "高尿酸"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "啤酒"
+    ],
+    "health_needs": [
+      "降尿酸",
+      "护肝",
+      "减脂"
+    ],
+    "height_cm": 173.1,
+    "weight_kg": 62.6,
+    "bmi": 20.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.1,
+      "血压_mmHg": "112/82",
+      "总胆固醇_mmol/L": 4.7,
+      "甘油三酯_mmol/L": 1.2,
+      "低密度脂蛋白_mmol/L": 3.17,
+      "高密度脂蛋白_mmol/L": 1.48,
+      "尿酸_umol/L": 459
+    },
+    "calorie_target": 2368
+  },
+  {
+    "id": 34,
+    "gender": "女",
+    "age": 26,
+    "activity_level": "中",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "偏甜",
+    "allergies": [
+      "牛奶"
+    ],
+    "health_needs": [
+      "补气血",
+      "养脾胃",
+      "改善皮肤"
+    ],
+    "height_cm": 162.9,
+    "weight_kg": 63.4,
+    "bmi": 23.9,
+    "medical_data": {},
+    "calorie_target": 2109
+  },
+  {
+    "id": 35,
+    "gender": "男",
+    "age": 53,
+    "activity_level": "低",
+    "special_groups": [
+      "高血糖",
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "少盐少糖",
+    "allergies": [],
+    "health_needs": [
+      "控糖",
+      "降压",
+      "护血管"
+    ],
+    "height_cm": 168.7,
+    "weight_kg": 79.7,
+    "bmi": 28.0,
+    "medical_data": {
+      "空腹血糖_mmol/L": 8.3,
+      "血压_mmHg": "153/88",
+      "总胆固醇_mmol/L": 5.23,
+      "甘油三酯_mmol/L": 1.49,
+      "低密度脂蛋白_mmol/L": 3.42,
+      "高密度脂蛋白_mmol/L": 1.62,
+      "尿酸_umol/L": 310
+    },
+    "calorie_target": 1909
+  },
+  {
+    "id": 36,
+    "gender": "女",
+    "age": 41,
+    "activity_level": "高",
+    "special_groups": [
+      "哺乳期"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "花生"
+    ],
+    "health_needs": [
+      "催乳",
+      "补气血",
+      "缓解疲劳"
+    ],
+    "height_cm": 168.5,
+    "weight_kg": 63.6,
+    "bmi": 22.4,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.1,
+      "血压_mmHg": "120/79",
+      "总胆固醇_mmol/L": 4.99,
+      "甘油三酯_mmol/L": 1.52,
+      "低密度脂蛋白_mmol/L": 2.22,
+      "高密度脂蛋白_mmol/L": 1.32,
+      "尿酸_umol/L": 364
+    },
+    "calorie_target": 2282
+  },
+  {
+    "id": 37,
+    "gender": "男",
+    "age": 35,
+    "activity_level": "中",
+    "special_groups": [
+      "备孕"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "中性",
+    "allergies": [
+      "鸡蛋"
+    ],
+    "health_needs": [
+      "提高精子质量",
+      "补充锌",
+      "减脂"
+    ],
+    "height_cm": 173.7,
+    "weight_kg": 57.9,
+    "bmi": 19.2,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.2,
+      "血压_mmHg": "114/73",
+      "总胆固醇_mmol/L": 5.12,
+      "甘油三酯_mmol/L": 1.48,
+      "低密度脂蛋白_mmol/L": 3.06,
+      "高密度脂蛋白_mmol/L": 1.53,
+      "尿酸_umol/L": 337
+    },
+    "calorie_target": 2316
+  },
+  {
+    "id": 38,
+    "gender": "女",
+    "age": 24,
+    "activity_level": "低",
+    "special_groups": [
+      "孕妇"
+    ],
+    "pregnancy_period": "8周",
+    "taste_preference": "酸味",
+    "allergies": [
+      "虾"
+    ],
+    "health_needs": [
+      "补叶酸",
+      "缓解孕吐",
+      "安胎"
+    ],
+    "height_cm": 152.1,
+    "weight_kg": 59.9,
+    "bmi": 25.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.0,
+      "血压_mmHg": "119/74",
+      "总胆固醇_mmol/L": 4.9,
+      "甘油三酯_mmol/L": 1.41,
+      "低密度脂蛋白_mmol/L": 2.25,
+      "高密度脂蛋白_mmol/L": 1.41,
+      "尿酸_umol/L": 314
+    },
+    "calorie_target": 1522
+  },
+  {
+    "id": 39,
+    "gender": "男",
+    "age": 61,
+    "activity_level": "低",
+    "special_groups": [
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [],
+    "health_needs": [
+      "降压",
+      "护心",
+      "改善睡眠"
+    ],
+    "height_cm": 161.4,
+    "weight_kg": 61.7,
+    "bmi": 23.7,
+    "medical_data": {
+      "空腹血糖_mmol/L": 4.9,
+      "血压_mmHg": "156/98",
+      "总胆固醇_mmol/L": 4.99,
+      "甘油三酯_mmol/L": 1.14,
+      "低密度脂蛋白_mmol/L": 3.25,
+      "高密度脂蛋白_mmol/L": 1.63,
+      "尿酸_umol/L": 339
+    },
+    "calorie_target": 1590
+  },
+  {
+    "id": 40,
+    "gender": "女",
+    "age": 35,
+    "activity_level": "中",
+    "special_groups": [
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "少糖",
+    "allergies": [
+      "芒果"
+    ],
+    "health_needs": [
+      "控糖",
+      "减脂",
+      "调理代谢"
+    ],
+    "height_cm": 160.6,
+    "weight_kg": 62.2,
+    "bmi": 24.1,
+    "medical_data": {
+      "空腹血糖_mmol/L": 8.2,
+      "血压_mmHg": "110/70",
+      "总胆固醇_mmol/L": 5.29,
+      "甘油三酯_mmol/L": 0.87,
+      "低密度脂蛋白_mmol/L": 2.68,
+      "高密度脂蛋白_mmol/L": 1.54,
+      "尿酸_umol/L": 309
+    },
+    "calorie_target": 1999
+  },
+  {
+    "id": 41,
+    "gender": "男",
+    "age": 27,
+    "activity_level": "高",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "辛辣",
+    "allergies": [
+      "海鲜"
+    ],
+    "health_needs": [
+      "增肌",
+      "提高免疫力"
+    ],
+    "height_cm": 170.8,
+    "weight_kg": 62.1,
+    "bmi": 21.3,
+    "medical_data": {},
+    "calorie_target": 2688
+  },
+  {
+    "id": 42,
+    "gender": "女",
+    "age": 39,
+    "activity_level": "低",
+    "special_groups": [
+      "备孕"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "牛奶",
+      "鸡蛋"
+    ],
+    "health_needs": [
+      "补气血",
+      "暖宫",
+      "调节内分泌"
+    ],
+    "height_cm": 162.1,
+    "weight_kg": 70.7,
+    "bmi": 26.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.4,
+      "血压_mmHg": "124/70",
+      "总胆固醇_mmol/L": 5.08,
+      "甘油三酯_mmol/L": 0.92,
+      "低密度脂蛋白_mmol/L": 1.99,
+      "高密度脂蛋白_mmol/L": 1.43,
+      "尿酸_umol/L": 341
+    },
+    "calorie_target": 1636
+  },
+  {
+    "id": 43,
+    "gender": "男",
+    "age": 49,
+    "activity_level": "中",
+    "special_groups": [
+      "高尿酸",
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "少油",
+    "allergies": [
+      "豆制品"
+    ],
+    "health_needs": [
+      "降尿酸",
+      "控糖",
+      "护肾"
+    ],
+    "height_cm": 184.0,
+    "weight_kg": 75.8,
+    "bmi": 22.4,
+    "medical_data": {
+      "空腹血糖_mmol/L": 7.4,
+      "血压_mmHg": "123/78",
+      "总胆固醇_mmol/L": 5.31,
+      "甘油三酯_mmol/L": 1.25,
+      "低密度脂蛋白_mmol/L": 3.15,
+      "高密度脂蛋白_mmol/L": 1.69,
+      "尿酸_umol/L": 554
+    },
+    "calorie_target": 2585
+  },
+  {
+    "id": 44,
+    "gender": "女",
+    "age": 22,
+    "activity_level": "中",
+    "special_groups": [],
+    "pregnancy_period": null,
+    "taste_preference": "甜食",
+    "allergies": [],
+    "health_needs": [
+      "减脂",
+      "美容",
+      "调理肠胃"
+    ],
+    "height_cm": 156.6,
+    "weight_kg": 48.1,
+    "bmi": 19.6,
+    "medical_data": {},
+    "calorie_target": 1842
+  },
+  {
+    "id": 45,
+    "gender": "男",
+    "age": 56,
+    "activity_level": "低",
+    "special_groups": [
+      "高血压"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "花生"
+    ],
+    "health_needs": [
+      "降压",
+      "补钙",
+      "预防中风"
+    ],
+    "height_cm": 169.4,
+    "weight_kg": 71.7,
+    "bmi": 25.0,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.2,
+      "血压_mmHg": "150/96",
+      "总胆固醇_mmol/L": 4.75,
+      "甘油三酯_mmol/L": 0.86,
+      "低密度脂蛋白_mmol/L": 3.27,
+      "高密度脂蛋白_mmol/L": 1.37,
+      "尿酸_umol/L": 265
+    },
+    "calorie_target": 1800
+  },
+  {
+    "id": 46,
+    "gender": "女",
+    "age": 28,
+    "activity_level": "高",
+    "special_groups": [
+      "孕妇"
+    ],
+    "pregnancy_period": "34周",
+    "taste_preference": "酸甜",
+    "allergies": [
+      "蟹"
+    ],
+    "health_needs": [
+      "补铁",
+      "补钙",
+      "消肿"
+    ],
+    "height_cm": 153.3,
+    "weight_kg": 60.6,
+    "bmi": 25.8,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.6,
+      "血压_mmHg": "121/74",
+      "总胆固醇_mmol/L": 4.99,
+      "甘油三酯_mmol/L": 1.75,
+      "低密度脂蛋白_mmol/L": 2.39,
+      "高密度脂蛋白_mmol/L": 1.62,
+      "尿酸_umol/L": 316
+    },
+    "calorie_target": 2178
+  },
+  {
+    "id": 47,
+    "gender": "男",
+    "age": 44,
+    "activity_level": "中",
+    "special_groups": [
+      "高血糖"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "无糖",
+    "allergies": [
+      "虾"
+    ],
+    "health_needs": [
+      "控糖",
+      "护眼",
+      "减重"
+    ],
+    "height_cm": 172.4,
+    "weight_kg": 60.9,
+    "bmi": 20.5,
+    "medical_data": {
+      "空腹血糖_mmol/L": 8.7,
+      "血压_mmHg": "125/70",
+      "总胆固醇_mmol/L": 5.22,
+      "甘油三酯_mmol/L": 1.52,
+      "低密度脂蛋白_mmol/L": 3.28,
+      "高密度脂蛋白_mmol/L": 1.74,
+      "尿酸_umol/L": 266
+    },
+    "calorie_target": 2280
+  },
+  {
+    "id": 48,
+    "gender": "女",
+    "age": 31,
+    "activity_level": "低",
+    "special_groups": [
+      "哺乳期"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "清淡",
+    "allergies": [
+      "坚果"
+    ],
+    "health_needs": [
+      "催乳",
+      "补气血",
+      "改善睡眠"
+    ],
+    "height_cm": 160.4,
+    "weight_kg": 66.4,
+    "bmi": 25.8,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.4,
+      "血压_mmHg": "110/71",
+      "总胆固醇_mmol/L": 3.99,
+      "甘油三酯_mmol/L": 1.26,
+      "低密度脂蛋白_mmol/L": 1.87,
+      "高密度脂蛋白_mmol/L": 1.37,
+      "尿酸_umol/L": 314
+    },
+    "calorie_target": 1620
+  },
+  {
+    "id": 49,
+    "gender": "男",
+    "age": 40,
+    "activity_level": "高",
+    "special_groups": [
+      "高血压",
+      "高尿酸"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "少盐",
+    "allergies": [],
+    "health_needs": [
+      "降压",
+      "降尿酸",
+      "护肝"
+    ],
+    "height_cm": 167.6,
+    "weight_kg": 61.2,
+    "bmi": 21.8,
+    "medical_data": {
+      "空腹血糖_mmol/L": 5.6,
+      "血压_mmHg": "153/92",
+      "总胆固醇_mmol/L": 5.27,
+      "甘油三酯_mmol/L": 1.27,
+      "低密度脂蛋白_mmol/L": 3.15,
+      "高密度脂蛋白_mmol/L": 1.14,
+      "尿酸_umol/L": 487
+    },
+    "calorie_target": 2526
+  },
+  {
+    "id": 50,
+    "gender": "女",
+    "age": 37,
+    "activity_level": "中",
+    "special_groups": [
+      "备孕"
+    ],
+    "pregnancy_period": null,
+    "taste_preference": "偏辣",
+    "allergies": [
+      "鸡蛋"
+    ],
+    "health_needs": [
+      "补叶酸",
+      "暖宫",
+      "调理月经"
+    ],
+    "height_cm": 161.5,
+    "weight_kg": 51.9,
+    "bmi": 19.9,
+    "medical_data": {
+      "空腹血糖_mmol/L": 4.8,
+      "血压_mmHg": "111/82",
+      "总胆固醇_mmol/L": 4.15,
+      "甘油三酯_mmol/L": 1.64,
+      "低密度脂蛋白_mmol/L": 2.67,
+      "高密度脂蛋白_mmol/L": 1.27,
+      "尿酸_umol/L": 381
+    },
+    "calorie_target": 1832
+  }
+]
