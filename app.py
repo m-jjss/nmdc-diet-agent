@@ -1189,65 +1189,58 @@ def dialog():
         elif intent == 'reject_recommendation':
             # 用户否定了之前的推荐
             # 如果没有给出具体理由，反问原因
-            reason_keywords = ['太辣', '太油', '太咸', '太甜', '太淡', '太贵', '太复杂',
-                             '不想吃', '吃腻', '不喜欢吃', '没有', '太多', '太少',
-                             '热量', '卡路里', '脂肪', '换', '不要', '去掉',
-                             '素', '荤', '肉', '鱼', '鸡', '猪', '牛', '虾', '蛋',
-                             '辣', '油', '咸', '甜']
-            has_reason = any(kw in message for kw in reason_keywords)
             bare_negation = re.search(r'^(不太行|不喜欢|不好吃|不太好|不行|不怎么样|算了|不要这个|换一个|都不好|都不行|都不喜欢)[啊呢吧呀嘛]*[。.！!]*$', message.strip())
-            
-            if bare_negation and not has_reason:
+
+            if bare_negation:
                 response_text = "可以告诉我具体哪里不满意吗？比如太辣了？太油腻？还是想吃别的口味？"
             else:
-                # 上下文回溯：解析用户引用
+                # 记录被否定的菜品，走 Agent 路径做语义理解
                 resolved_message = dm.resolve_reference(message)
-                
-                # 尝试识别被否定的菜品
-                rejected = []
-                for recipe_name in dm.recommended_recipes:
-                    if recipe_name in resolved_message or recipe_name in message:
-                        rejected.append(recipe_name)
-                
+                rejected = [name for name in dm.recommended_recipes
+                           if name in resolved_message or name in message]
                 if rejected:
                     for name in rejected:
                         dm.add_rejected_recipe(name)
-                else:
-                    # 否定所有已推荐的菜品
+                elif dm.recommended_recipes:
                     for name in dm.recommended_recipes:
                         dm.add_rejected_recipe(name)
-                
-                # 重新推荐
-                filters = dm.get_search_filters()
-                results = retriever.search(resolved_message, top_k=10, filters=filters)
-                
-                # 应用约束过滤
-                if user_ids:
-                    results = engine.filter_by_constraints(results, user_ids=user_ids)
-                elif user_id:
-                    results = engine.filter_by_constraints(results, user_id=user_id)
-                
-                recommendations = results[:5]
-                recipe_names = [r['name'] for r in recommendations]
-                dm.add_recommended_recipes(recipe_names)
-                
-                response_text = f"重新给你搭了几道：{', '.join(recipe_names)}。"
+
+                # 构造上下文消息，告诉 Agent 用户否决了什么、已有偏好是什么
+                context_parts = []
+                if dm.rejected_recipes:
+                    context_parts.append(f"用户已否决: {', '.join(dm.rejected_recipes[-5:])}")
+                context_parts.append(f"用户要求: {resolved_message}")
+                agent_message = '。'.join(context_parts)
+
+                agent_result = _agentic_recommend(
+                    user_message=agent_message,
+                    user_id=user_id, user_ids=user_ids,
+                    dm=dm, retriever=retriever, engine=engine, llm=llm
+                )
+                response_text = agent_result['response']
+                recommendations = agent_result['recommendations']
+                if agent_result.get('ask_question'):
+                    response_text = agent_result['ask_question']
+                t_llm_dialog = agent_result.get('llm_ms', 0)
         
         elif intent == 'request_more':
-            # 用户要求更多推荐
-            filters = dm.get_search_filters()
-            results = retriever.search(message, top_k=15, filters=filters)
-            
-            if user_ids:
-                results = engine.filter_by_constraints(results, user_ids=user_ids)
-            elif user_id:
-                results = engine.filter_by_constraints(results, user_id=user_id)
-            
-            recommendations = results[:8]
-            recipe_names = [r['name'] for r in recommendations]
-            dm.add_recommended_recipes(recipe_names)
-            
-            response_text = f"再来几道：{', '.join(recipe_names)}。"
+            # 用户要求更多推荐 — Agent 路径，综合考虑已有推荐和当前需求
+            context_parts = []
+            if dm.recommended_recipes:
+                context_parts.append(f"已推荐: {', '.join(dm.recommended_recipes[-8:])}，请避免重复")
+            context_parts.append(f"用户要求: {message}")
+            agent_message = '。'.join(context_parts)
+
+            agent_result = _agentic_recommend(
+                user_message=agent_message,
+                user_id=user_id, user_ids=user_ids,
+                dm=dm, retriever=retriever, engine=engine, llm=llm
+            )
+            response_text = agent_result['response']
+            recommendations = agent_result['recommendations']
+            if agent_result.get('ask_question'):
+                response_text = agent_result['ask_question']
+            t_llm_dialog = agent_result.get('llm_ms', 0)
         
         elif intent == 'vague_query':
             # 用户进行模糊查询（如"随便推荐"），保持当前推荐或基于已有偏好推荐
@@ -1318,8 +1311,26 @@ def dialog():
                 response_text = "请告诉我您想替换哪道菜。"
         
         elif intent == 'confirm':
-            response_text = f"好的，已确认推荐～祝你用餐愉快！"
             dm.set_dialog_state('completed')
+            # 营养总结 + 烹饪小贴士
+            parts = ["好的，已确认推荐～"]
+            if dm.recommended_recipes:
+                # 按人营养摄入
+                nutri = compute_meal_nutrition_summary(
+                    dm.recommended_recipes[-8:],
+                    user_ids=user_ids if user_ids else ([user_id] if user_id else None)
+                )
+                if nutri:
+                    parts.append(nutri)
+                # 烹饪建议
+                total_time = sum(
+                    (retriever.get_recipe_by_name(r) or {}).get('cooking_time', 0)
+                    for r in dm.recommended_recipes[-8:]
+                )
+                parts.append(f"预计总烹饪时间约{total_time}分钟，建议先处理耗时长的菜品。祝你用餐愉快！")
+            else:
+                parts.append("祝你用餐愉快！")
+            response_text = '\n'.join(parts)
         
         elif intent == 'cancel':
             dm.reset_dialog()
