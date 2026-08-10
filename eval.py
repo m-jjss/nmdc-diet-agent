@@ -244,28 +244,46 @@ class AutoScorer:
 
         tests = [
             {
-                "name": "高血压用户(13)—157/88",
+                "name": "高血压用户(13)",
                 "user_id": "13",
                 "message": "推荐几道菜",
-                "points": 5,
+                "points": 3,
+            },
+            {
+                "name": "高血糖用户(3)—高血压+高血糖",
+                "user_id": "3",
+                "message": "推荐几道菜",
+                "points": 3,
             },
             {
                 "name": "高尿酸用户(23)—尿酸482",
                 "user_id": "23",
                 "message": "推荐几道菜",
-                "points": 5,
+                "points": 3,
             },
             {
                 "name": "海鲜过敏用户(1)",
                 "user_id": "1",
                 "message": "推荐几道菜",
-                "points": 5,
+                "points": 3,
+            },
+            {
+                "name": "鸡蛋过敏用户(6)—海鲜+鸡蛋+哺乳期",
+                "user_id": "6",
+                "message": "推荐几道菜",
+                "points": 3,
             },
             {
                 "name": "孕妇用户(20)—12周",
                 "user_id": "20",
                 "message": "推荐几道菜",
-                "points": 5,
+                "points": 3,
+            },
+            {
+                "name": "哺乳期用户(6)—多重过敏+哺乳",
+                "user_id": "6",
+                "message": "推荐一份营养午餐",
+                "points": 2,
             },
         ]
 
