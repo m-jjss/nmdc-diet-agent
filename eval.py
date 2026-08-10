@@ -898,7 +898,7 @@ if __name__ == '__main__':
 
     if not check_health():
         print("\n[FATAL] 服务未启动，请先运行 python app.py")
-        print("       cd d:\\人人人工智能\\优优优化 && python app.py")
+        print("       在项目根目录执行: python app.py")
         sys.exit(1)
 
     scorer = AutoScorer()
