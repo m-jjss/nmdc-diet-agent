@@ -1423,7 +1423,7 @@ def dialog():
         if 'agent_result' in locals():
             timing_data['agent_mode'] = True
             timing_data['tool_calls'] = agent_result.get('tool_calls_made', 0)
-            timing_data['first_token_ms'] = agent_result.get('first_token_ms', 0)
+            timing_data['t_first_token_ms'] = agent_result.get('first_token_ms', 0)
         dm.record_timing(timing_data)
         _global_timings.append(timing_data)
         if len(_global_timings) > 200:

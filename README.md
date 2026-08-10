@@ -50,14 +50,23 @@ Python · Flask · DeepSeek · FAISS · sentence-transformers · Docker
 
 ```
 ├── app.py                  # Flask 主应用，API 路由 + Agent ReAct 循环
-├── llm_client.py           # LLM 客户端封装（多提供商支持）
-├── rag_retriever.py        # RAG 检索器（FAISS 索引）
+├── chat.py                 # 终端对话界面（python chat.py 1）
+├── llm_client.py           # LLM 客户端封装（DeepSeek + Function Calling）
+├── rag_retriever.py        # RAG 检索器（FAISS 索引 + hash 回退）
 ├── constraint_engine.py    # 约束引擎（过敏/疾病/营养计算）
 ├── dialog_enhancer.py      # 对话管理器（意图识别/偏好提取）
 ├── result_verifier.py      # 结果验证器（幻觉/过敏/约束检测）
-├── gradio_app.py           # Gradio 前端界面
-├── eval.py                 # 竞赛自动评分脚本
-├── config.py               # 配置中心
-├── docs/                   # 项目文档
-└── Dockerfile              # Docker 镜像构建
+├── gradio_app.py           # Gradio Web 前端界面
+├── eval.py                 # 竞赛自动评分脚本（25组用例，100分制）
+├── config.py               # 配置中心（环境变量 + 默认值）
+├── requirements.txt        # Python 依赖
+├── .env.example            # 环境变量模板
+├── docker-compose.yml      # Docker Compose 编排
+├── Dockerfile              # Docker 镜像构建
+├── docs/                   # 项目文档（技术方案/API/部署/摘要/演示脚本）
+├── recipes_parsed.json     # 菜谱库（约 2000 道）
+├── user_profiles_standardized.json  # 用户健康档案（50 份）
+├── nutrition_database.json           # 营养数据库（185 种食材）
+├── ingredient_synonym_map.json       # 食材同义词映射
+└── 对话用例.json           # 大赛提供的 20 组对话用例
 ```

@@ -18,7 +18,7 @@ class Config:
     默认使用本地模式运行，无需外部API Key即可进行基础功能测试。
     
     配置说明：
-    - LLM_PROVIDER: 选择LLM提供商，可选值: local, qwen, ernie, openai
+    - LLM_PROVIDER: 选择LLM提供商，可选值: local, qwen, ernie, openai, deepseek
     - API Key相关: 各提供商的API密钥和基础URL
     - 索引相关: FAISS索引路径和向量维度
     - 数据文件路径: 菜谱、营养数据库、用户档案的存储路径
