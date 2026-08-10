@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -14,10 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENV LLM_PROVIDER=local
 ENV DEEPSEEK_API_KEY=
 ENV DEEPSEEK_API_BASE=https://api.deepseek.com/v1
-ENV DEEPSEEK_MODEL=deepseek-chat
+ENV DEEPSEEK_MODEL=deepseek-v4-flash
 ENV QWEN_API_KEY=
 ENV ERNIE_API_KEY=
 ENV ERNIE_SECRET_KEY=

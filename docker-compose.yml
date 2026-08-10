@@ -5,10 +5,10 @@ services:
     ports:
       - "5000:5000"
     environment:
-      - LLM_PROVIDER=${LLM_PROVIDER:-local}
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - DEEPSEEK_API_BASE=${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
-      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-v4-flash}
       - QWEN_API_KEY=${QWEN_API_KEY:-}
       - ERNIE_API_KEY=${ERNIE_API_KEY:-}
       - ERNIE_SECRET_KEY=${ERNIE_SECRET_KEY:-}
@@ -16,7 +16,7 @@ services:
       - FLASK_ENV=production
       - ENV=production
     volumes:
-      - ./faiss_index:/app/faiss_index
+      - ./idx:/app/idx
     restart: always
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health', timeout=3)"]

@@ -24,3 +24,7 @@ instance/
 
 *.egg-info/
 .installed.cfg
+
+idx/
+_err_log.txt
+.trae/
