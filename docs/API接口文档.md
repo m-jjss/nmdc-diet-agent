@@ -320,6 +320,8 @@ curl -X POST http://localhost:5000/api/dialog \
 
 流式对话接口（SSE 协议），支持首 Token 延迟追踪。参数同 `POST /api/dialog`。
 
+> **格式说明：** 本接口为非 OpenAI 通用范式，采用自定义 SSE 事件流格式（含推荐、文本、完成三种事件类型）。如竞赛评测要求严格遵循 OpenAI Chat Completion Stream 规范，可将 `delta` 事件包装为 `data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"..."}}]}` 格式。
+
 调用示例：
 
 ```bash
@@ -328,14 +330,24 @@ curl -X POST http://localhost:5000/api/dialog/stream \
   -d '{"user_id":"demo_user","message":"推荐晚餐"}'
 ```
 
-响应格式（SSE 事件流）：
+响应格式（SSE 事件流，共三种事件类型）：
 
 ```
-data: {"delta": "好的", "t_first_token_ms": 1450}
-data: {"delta": "，为您推荐..."}
+data: {"event":"recommendations","data":{"recommendations":[...],"context_summary":"..."}}
+
+data: {"event":"text","data":{"text":"好的"}}
+
+data: {"event":"text","data":{"text":"，为您推荐..."}}
 ...
-data: {"done": true, "recommendations": [...], "t_total_ms": 6200}
+
+data: {"event":"complete","data":{"recommendations":[...],"timing":{"total_ms":6200,"first_token_ms":1450}}}
 ```
+
+| 事件类型 | 说明 | 包含字段 |
+|----------|------|----------|
+| `recommendations` | 检索结果就绪（首token前发送） | `recommendations`, `context_summary` |
+| `text` | LLM 流式文本片段 | `text`（逐 token 增量） |
+| `complete` | 推荐完成 | `recommendations`, `response`, `timing`, `user_preferences` |
 
 ## 性能监控
 

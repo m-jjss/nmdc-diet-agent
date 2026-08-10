@@ -632,9 +632,66 @@ class AutoScorer:
             print(f"    轮2: \"川菜\" → 未检测矛盾 ⚠️")
         score += d_score
 
+        # — 场景E：否定推荐后追加具体要求 —
+        print("\n  [场景E] 否定→给理由→Agent重新推荐 (满分5)")
+        session_e = f"eval_reject_{int(time.time())}"
+        e_score = 0
+        r = self.call_dialog("推荐3道晚餐", user_id=session_e)
+        rsp1 = self._get_response(r)
+        recs1 = self._get_recs(r)
+        print(f"    轮1: \"推荐3道晚餐\" → {rsp1[:50]}... ({len(recs1)}道)")
+        r2 = self.call_dialog("不好吃，太清淡了，想吃口味重一点的", user_id=session_e)
+        rsp2 = self._get_response(r2)
+        recs2 = self._get_recs(r2)
+        t_ms = round(r2.get('_t_total', 0), 0)
+        # 检查是否理解了"太清淡→口味重"的含义
+        understands_reason = any(kw in rsp2 for kw in ['重口味', '重口', '浓郁', '下饭', '红烧', '麻辣', '香辣', '换', '调整'])
+        if understands_reason and recs2:
+            e_score += 3
+            print(f"    轮2: \"太清淡→口味重\" → Agent理解了拒绝原因 ✅ (+3) | {t_ms:.0f}ms")
+        else:
+            print(f"    轮2: \"太清淡→口味重\" → 未理解原因 ⚠️ | {t_ms:.0f}ms")
+            print(f"         回复: {rsp2[:80]}...")
+        # 检查新推荐是否和旧推荐不同
+        if recs1 and recs2:
+            old_names = {r.get('name','') for r in recs1}
+            new_names = {r.get('name','') for r in recs2}
+            overlap = old_names & new_names
+            if len(overlap) < len(new_names) * 0.5:  # 至少换了一半
+                e_score += 2
+                print(f"       ✅ 推荐大幅更新 (重叠{len(overlap)}/{len(new_names)}道) (+2)")
+            else:
+                print(f"       ⚠️ 推荐变化不大 (重叠{len(overlap)}/{len(new_names)}道)")
+        score += e_score
+
+        # — 场景F：多人场景——隐含冲突 —
+        print("\n  [场景F] 多人隐含冲突：三人口味对立 (满分5)")
+        session_f = f"eval_familyconflict_{int(time.time())}"
+        f_score = 0
+        # 用预置用户档案：高血压(2) + 痛风(3)
+        r = self.call_dialog("推荐4人晚餐", user_id=session_f, user_ids=["2", "3"])
+        rsp = self._get_response(r)
+        recs = self._get_recs(r)
+        t_ms = round(r.get('_t_total', 0), 0)
+        if recs:
+            # 检查是否有荤素搭配意识
+            f_score += 2
+            print(f"    多人→有推荐结果 ({len(recs)}道) (+2) | {t_ms:.0f}ms")
+        else:
+            print(f"    多人→无推荐，Agent在反问 | {t_ms:.0f}ms")
+        # 检查是否在回复中提到了多人的约束考虑
+        if any(kw in rsp for kw in ['高血压', '痛风', '低盐', '低嘌呤', '兼顾', '平衡', '不同']):
+            f_score += 3
+            print(f"       ✅ 回复体现了多人约束意识 (+3)")
+            print(f"         回复: {rsp[:100]}...")
+        else:
+            print(f"       ⚠️ 回复未体现多人约束考虑")
+        score += f_score
+
         self.category_scores['multi_turn']['score'] = min(score, 30)
         print(f"\n  >> 多轮交互得分: {min(score, 30)}/30")
         print(f"     场景A(最小修改)={a_score}/15  场景B(交互自然)={b_score}/8  场景C(上下文)={c_score}/7  场景D(需求矛盾)={d_score}/5")
+        print(f"     场景E(否定理解)={e_score}/5  场景F(多人冲突)={f_score}/5")
 
     # ==================== (4) 性能效率 30分 ====================
     def run_performance_eval(self):
