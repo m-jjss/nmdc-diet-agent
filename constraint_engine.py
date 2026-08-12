@@ -49,7 +49,7 @@ class ConstraintEngine:
                 '营养约束': {'sodium': 'low'}
             },
             '糖尿病': {
-                '禁忌食材': ['糖', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点', '巧克力', '含糖饮料'],
+                '禁忌食材': ['糖', '甜', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点', '巧克力', '含糖饮料'],
                 '推荐食材': ['燕麦', '糙米', '全麦面包', '苦瓜', '黄瓜', '西红柿'],
                 '营养约束': {'carb': 'low'}
             },
@@ -69,7 +69,7 @@ class ConstraintEngine:
                 '营养约束': {'purine': 'low'}
             },
             '高血糖': {
-                '禁忌食材': ['糖', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点', '精米白面'],
+                '禁忌食材': ['糖', '甜', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点', '精米白面'],
                 '推荐食材': ['燕麦', '糙米', '全麦面包', '苦瓜', '南瓜'],
                 '营养约束': {'carb': 'low'}
             }
@@ -290,12 +290,15 @@ class ConstraintEngine:
         if not diseases:
             return violations
         
-        # 获取菜谱的食材、描述和做法
+        # 获取菜谱的食材、描述、做法、标签（label/tags 含"甜""儿童"等语义标签，需纳入硬约束检查）
         ingredients = self._normalize_ingredients(recipe)
         description = str(recipe.get('description', '')).lower()
         method = str(recipe.get('method', '')).lower()
         name = str(recipe.get('name', '')).lower()
-        all_text = ' '.join(ingredients) + ' ' + description + ' ' + method + ' ' + name
+        label = str(recipe.get('label', '')).lower()
+        raw_tags = recipe.get('tags', [])
+        tags = ' '.join(raw_tags).lower() if isinstance(raw_tags, list) else str(raw_tags).lower()
+        all_text = ' '.join(ingredients) + ' ' + description + ' ' + method + ' ' + name + ' ' + label + ' ' + tags
         
         # 检查每种疾病的限制
         for disease in diseases:

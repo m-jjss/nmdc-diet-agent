@@ -119,11 +119,11 @@ class ResultVerifier:
         # 疾病禁忌食材
         disease_restrictions = {
             '高血压': ['盐', '酱油', '咸菜', '腌肉', '咸鱼', '腊肉', '腐乳'],
-            '糖尿病': ['糖', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点'],
+            '糖尿病': ['糖', '甜', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点'],
             '高血脂': ['肥肉', '猪油', '奶油', '黄油', '油炸'],
             '痛风': ['海鲜', '动物内脏', '啤酒', '火锅汤', '豆制品'],
             '高尿酸': ['海鲜', '动物内脏', '啤酒', '火锅汤', '豆制品'],
-            '高血糖': ['糖', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点']
+            '高血糖': ['糖', '甜', '蜂蜜', '冰糖', '白糖', '蛋糕', '甜点']
         }
         
         # 特殊人群禁忌食材
@@ -139,13 +139,20 @@ class ResultVerifier:
             name = rec.get('name', '')
             
             if name in self.recipe_names:
-                ings = self.recipe_names[name].get('ingredients', [])
-                desc = self.recipe_names[name].get('description', '')
+                recipe_full = self.recipe_names[name]
+                ings = recipe_full.get('ingredients', [])
+                desc = recipe_full.get('description', '')
+                label = str(recipe_full.get('label', '')).lower()
+                raw_tags = recipe_full.get('tags', [])
+                tags = ' '.join(raw_tags).lower() if isinstance(raw_tags, list) else str(raw_tags).lower()
             else:
                 ings = rec.get('ingredients', [])
                 desc = rec.get('description', '')
+                label = str(rec.get('label', '')).lower()
+                raw_tags = rec.get('tags', [])
+                tags = ' '.join(raw_tags).lower() if isinstance(raw_tags, list) else str(raw_tags).lower()
             
-            all_text = ' '.join([str(i).lower() for i in ings]) + ' ' + str(desc).lower()
+            all_text = ' '.join([str(i).lower() for i in ings]) + ' ' + str(desc).lower() + ' ' + label + ' ' + tags
             
             # 检查疾病禁忌
             for disease in diseases:
