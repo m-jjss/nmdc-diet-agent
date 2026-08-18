@@ -2041,4 +2041,4 @@ if __name__ == '__main__':
     print("健康检查: http://localhost:5000/api/health")
     print("按 Ctrl+C 停止服务")
     
-    app.run(host='0.0.0.0', port=5000, debug=Config.DEBUG)
+    app.run(host='0.0.0.0', port=5000, debug=Config.DEBUG, threaded=True)

@@ -1,0 +1,21 @@
+# 敏感配置：禁止进入镜像
+.env
+.env.*.local
+
+# 版本控制与开发目录
+.git
+.gitignore
+__pycache__
+*.py[cod]
+.venv
+venv
+
+# 运行时生成物
+idx
+*.log
+*.tmp
+
+# 文档与演示材料（镜像运行不需要）
+docs
+*.md
+*.docx

@@ -26,4 +26,6 @@ ENV ENV=production
 
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+# 单进程多线程：gunicorn -w 1 保证多轮对话状态（进程内 DialogManager）共享，
+# --threads 8 提供并发处理能力，避免多 worker 间状态丢失
+CMD ["gunicorn", "-w", "1", "--threads", "8", "-b", "0.0.0.0:5000", "app:app", "--timeout", "120"]
