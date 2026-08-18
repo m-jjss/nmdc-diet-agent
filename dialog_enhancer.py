@@ -1004,16 +1004,17 @@ class DialogManager:
 
 <意图分类>
 - recommend: 请求推荐菜品
-- set_preference: 设置/声明偏好（如"我是素食者"）
+- set_preferences: 设置/声明偏好（如"我是素食者"）
 - add_constraint: 在已有推荐基础上追加约束（如"不要太辣"）
-- reject: 否定当前推荐（如"不要这个"）
-- replace: 请求替换某道菜（如"把红烧肉换成清蒸鱼"）
-- ask_more: 请求更多推荐
-- ask_detail: 询问菜品详情/做法/营养
+- reject_recommendation: 否定当前推荐（如"不要这个"）
+- request_substitute: 请求替换某道菜（如"把红烧肉换成清蒸鱼"）
+- request_more: 请求更多推荐
+- ask_recipe_detail: 询问菜品详情/做法
+- ask_nutrition: 询问菜品营养/热量
 - confirm: 确认推荐
 - cancel: 取消/重置
 - greet: 问候
-- vague: 模糊查询（如"随便"）
+- vague_query: 模糊查询（如"随便"）
 - clarify: 用户消息信息不足，需要反问
 
 <偏好提取>

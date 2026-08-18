@@ -374,18 +374,18 @@ class OpenAIClient(LLMClient):
             )
             
             if resp.status_code == 401 or resp.status_code == 403:
-                print(f"[WARN] DeepSeek API鉴权失败: status={resp.status_code}, url={self.api_base}")
-                print(f"   请检查 .env 文件中的 DEEPSEEK_API_KEY 是否正确")
-                raise ValueError(f"DeepSeek API鉴权失败: {resp.status_code}")
+                print(f"[WARN] OpenAI API鉴权失败: status={resp.status_code}, url={self.api_base}")
+                print(f"   请检查 .env 文件中的 OPENAI_API_KEY 是否正确")
+                raise ValueError(f"OpenAI API鉴权失败: {resp.status_code}")
             
             if resp.status_code != 200:
                 error_info = resp.json() if resp.content else {}
                 import datetime
-                err_msg = f"[WARN] DeepSeek API调用失败: status={resp.status_code}, error={error_info}"
+                err_msg = f"[WARN] OpenAI API调用失败: status={resp.status_code}, error={error_info}"
                 print(err_msg)
                 with open('_err_log.txt', 'a', encoding='utf-8') as f:
                     f.write(f"{datetime.datetime.now()} {err_msg}\n")
-                raise ValueError(f"DeepSeek API调用失败: {resp.status_code}")
+                raise ValueError(f"OpenAI API调用失败: {resp.status_code}")
             
             return resp.json()['choices'][0]['message']['content']
         except ValueError as e:

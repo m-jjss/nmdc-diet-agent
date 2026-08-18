@@ -248,6 +248,7 @@ _llm_client = None
 _rag_retriever = None
 _constraint_engine = None
 _dialog_managers = {}
+_MAX_DIALOG_MANAGERS = 500  # 会话缓存上限，超出时淘汰最旧会话（防内存泄漏）
 _result_verifier = None
 
 # 请求缓存
@@ -1201,6 +1202,8 @@ def dialog():
         # 创建或获取对话管理器
         dialog_key = user_id or "anonymous"
         if dialog_key not in _dialog_managers:
+            if len(_dialog_managers) >= _MAX_DIALOG_MANAGERS:
+                _dialog_managers.pop(next(iter(_dialog_managers)), None)
             _dialog_managers[dialog_key] = DialogManager()
         
         dm = _dialog_managers[dialog_key]
@@ -1249,9 +1252,22 @@ def dialog():
             intent = dm.detect_intent(message)  # 关键词回退
             preferences = dm.extract_preferences(message)  # 关键词回退
         
+        # 意图名归一化：兼容 LLM 可能输出的旧别名，映射到 dialog() 分支使用的标准名
+        INTENT_ALIASES = {
+            'vague': 'vague_query',
+            'replace': 'request_substitute',
+            'ask_more': 'request_more',
+            'ask_detail': 'ask_recipe_detail',
+            'reject': 'reject_recommendation',
+            'set_preference': 'set_preferences',
+            'ask_clarification': 'clarify',
+        }
+        intent = INTENT_ALIASES.get(intent, intent)
+        
         # 根据意图生成响应
         response_text = ""
         recommendations = []
+        agent_result = {}  # 统一初始化，避免部分意图分支引用未定义变量
         
         if intent == 'greet':
             response_text = "嗨！我是方太膳食规划助手～告诉我你的口味偏好，帮你搭配合适的菜品！"
@@ -1572,7 +1588,7 @@ def dialog():
             timing_data['t_verify_ms'] = t_verify_dialog
             timing_data['retry_count'] = retry_count
         # Agent模式标记
-        if 'agent_result' in locals():
+        if agent_result:
             timing_data['agent_mode'] = True
             timing_data['tool_calls'] = agent_result.get('tool_calls_made', 0)
             timing_data['t_first_token_ms'] = agent_result.get('first_token_ms', 0)
@@ -1637,6 +1653,8 @@ def dialog_stream():
         
         dialog_key = user_id or "anonymous"
         if dialog_key not in _dialog_managers:
+            if len(_dialog_managers) >= _MAX_DIALOG_MANAGERS:
+                _dialog_managers.pop(next(iter(_dialog_managers)), None)
             _dialog_managers[dialog_key] = DialogManager()
         
         dm = _dialog_managers[dialog_key]
@@ -1648,8 +1666,9 @@ def dialog_stream():
         preferences = dm.extract_preferences(message)
         intent = dm.detect_intent(message)
         
-        # 检查缓存
-        cache_key = hashlib.md5(f"{dialog_key}_{message}".encode()).hexdigest()
+        # 检查缓存（缓存键必须包含 user_ids，避免多人场景缓存串扰）
+        uid_part = '_'.join(sorted(user_ids)) if user_ids else ''
+        cache_key = hashlib.md5(f"{dialog_key}_{uid_part}_{message}".encode()).hexdigest()
         cached = _request_cache.get(cache_key)
         if cached and time.time() - cached['timestamp'] < _CACHE_TTL:
             def cached_stream():
