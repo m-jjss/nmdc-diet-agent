@@ -45,9 +45,12 @@ jobs:
             -X POST http://127.0.0.1:5000/api/dialog \
             -H "Content-Type: application/json" \
             -d '{"user_id":"ci_test","message":"推荐几道菜","reset":true}')
-          echo "HTTP status: $status"
-          cat /tmp/dialog_resp.json
-          echo ""
+          echo "## Dialog smoke test 结果" >> $GITHUB_STEP_SUMMARY
+          echo "HTTP status: $status" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/dialog_resp.json >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           if [ "$status" != "200" ]; then
             echo "dialog smoke test FAILED with HTTP $status"
             exit 1
@@ -56,4 +59,8 @@ jobs:
 
       - name: Container logs on failure
         if: failure()
-        run: docker logs fotile-agent
+        run: |
+          echo "## 容器日志（失败时）" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          docker logs fotile-agent --tail 200 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
