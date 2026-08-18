@@ -41,10 +41,18 @@ jobs:
 
       - name: Dialog smoke test
         run: |
-          resp=$(curl -sf -X POST http://127.0.0.1:5000/api/dialog \
+          status=$(curl -s -o /tmp/dialog_resp.json -w "%{http_code}" \
+            -X POST http://127.0.0.1:5000/api/dialog \
             -H "Content-Type: application/json" \
             -d '{"user_id":"ci_test","message":"推荐几道菜","reset":true}')
-          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('dialog ok, intent=', d.get('intent'), ', recs=', len(d.get('recommendations',[])))"
+          echo "HTTP status: $status"
+          cat /tmp/dialog_resp.json
+          echo ""
+          if [ "$status" != "200" ]; then
+            echo "dialog smoke test FAILED with HTTP $status"
+            exit 1
+          fi
+          python3 -c "import json; d=json.load(open('/tmp/dialog_resp.json')); print('dialog ok, intent=', d.get('intent'), ', recs=', len(d.get('recommendations',[])))"
 
       - name: Container logs on failure
         if: failure()
