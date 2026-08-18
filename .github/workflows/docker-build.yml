@@ -40,19 +40,7 @@ jobs:
           curl -sf http://127.0.0.1:5000/api/health
 
       - name: Dialog smoke test
-        run: |
-          docker exec fotile-agent sh -c 'cat > /tmp/diag.py << "PYEOF"
-import traceback
-import app as a
-c = a.app.test_client()
-try:
-    r = c.post("/api/dialog", json={"user_id":"ci_test","message":"推荐几道菜","reset":True})
-    print("STATUS:", r.status_code)
-    print(r.get_data(as_text=True)[:600])
-except Exception:
-    traceback.print_exc()
-PYEOF
-python /tmp/diag.py'
+        run: docker exec fotile-agent python /app/ci_diag.py
 
       - name: Container logs on failure
         if: failure()
