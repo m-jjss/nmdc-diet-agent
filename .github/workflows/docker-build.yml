@@ -39,8 +39,22 @@ jobs:
           fi
           curl -sf http://127.0.0.1:5000/api/health
 
-      - name: Dialog smoke test
+      - name: Dialog smoke test (app level)
         run: docker exec fotile-agent python /app/ci_diag.py
+
+      - name: HTTP smoke test (gunicorn)
+        run: |
+          status=$(curl -s -o /tmp/dialog_resp.json -w "%{http_code}" \
+            -X POST http://127.0.0.1:5000/api/dialog \
+            -H "Content-Type: application/json" \
+            -d '{"user_id":"ci_test","message":"推荐几道菜","reset":true}')
+          echo "HTTP status: $status"
+          if [ "$status" != "200" ]; then
+            echo "HTTP smoke test FAILED"
+            cat /tmp/dialog_resp.json
+            exit 1
+          fi
+          python3 -c "import json; d=json.load(open('/tmp/dialog_resp.json')); print('http ok, intent=', d.get('intent'), ', recs=', len(d.get('recommendations',[])))"
 
       - name: Container logs on failure
         if: failure()
