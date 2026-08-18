@@ -297,7 +297,7 @@ class AutoScorer:
             penalty_items = []
 
             if not recs:
-                print(f"    ➖ 无推荐（Agent反问中） | 0分 | {t_ms:.0f}ms")
+                print(f"    - 无推荐（Agent反问中） | 0分 | {t_ms:.0f}ms")
                 continue
 
             # 获取用户档案
@@ -328,13 +328,13 @@ class AutoScorer:
             earned = max(0, earned - deducted)
 
             if penalty_items:
-                print(f"    ⚠️ 违反{len(penalty_items)}项 → 扣{deducted}分 → 得{earned}分 | {t_ms:.0f}ms")
+                print(f"    [警告] 违反{len(penalty_items)}项 → 扣{deducted}分 → 得{earned}分 | {t_ms:.0f}ms")
                 for item in penalty_items[:5]:
                     print(f"       - {item}")
                 if len(penalty_items) > 5:
                     print(f"       ... 还有{len(penalty_items) - 5}项")
             else:
-                print(f"    ✅ 零违反 | {earned}分 | {t_ms:.0f}ms")
+                print(f"    [通过] 零违反 | {earned}分 | {t_ms:.0f}ms")
 
             score += earned
 
@@ -397,7 +397,7 @@ class AutoScorer:
                 notes.append(f"菜品不足({len(recs)}<{min_count})扣2分")
 
             if not recs:
-                print(f"    ➖ 无推荐 | 0分 | {t_ms:.0f}ms")
+                print(f"    - 无推荐 | 0分 | {t_ms:.0f}ms")
                 continue
 
             # — 幻觉检测 —
@@ -439,7 +439,7 @@ class AutoScorer:
                     deductions += 1
                     notes.append(f"无荤菜({ratio})扣1分")
                 else:
-                    notes.append(f"荤素搭配 {ratio} ✓")
+                    notes.append(f"荤素搭配 {ratio}")
 
             # — 烹饪方式多样性 —
             if test.get('check_methods') and len(with_names) >= 2:
@@ -449,7 +449,7 @@ class AutoScorer:
                     if full:
                         all_methods |= extract_cooking_methods(full)
                 if len(all_methods) >= 3:
-                    notes.append(f"烹饪方式{len(all_methods)}种 ✓")
+                    notes.append(f"烹饪方式{len(all_methods)}种")
                 elif len(all_methods) >= 1:
                     deductions += 1
                     notes.append(f"烹饪方式仅{len(all_methods)}种扣1分")
@@ -466,7 +466,7 @@ class AutoScorer:
                     deductions += 1
                     notes.append(f"全热菜({hot_count}热/{cold_count}冷)扣1分")
                 else:
-                    notes.append(f"冷热搭配 {hot_count}热/{cold_count}冷 ✓")
+                    notes.append(f"冷热搭配 {hot_count}热/{cold_count}冷")
 
             # — 按人营养均衡度（多人场景）—
             if test.get('user_ids') and NUTRITION_DB and len(with_names) >= 2:
@@ -483,12 +483,12 @@ class AutoScorer:
 
             # — 营养概览输出验证（Agent是否在响应中主动提供营养数据）—
             if test.get('check_nutrition_output', True) and result.get('nutrition_summary'):
-                notes.append("✅ Agent已输出营养概览")
+                notes.append("[通过] Agent已输出营养概览")
 
             earned = max(0, earned - deductions)
             score += earned
 
-            status = "✅" if deductions == 0 else "⚠️"
+            status = "[通过]" if deductions == 0 else "[警告]"
             names_str = ', '.join(with_names[:4]) if with_names else '无推荐'
             extra = f" ({len(with_names)}道)" if len(with_names) > 4 else ""
             print(f"    {status} {names_str}{extra} | {earned}分 | {t_ms:.0f}ms")
@@ -536,9 +536,9 @@ class AutoScorer:
 
                 if has_retention:
                     a_score += 5
-                    print(f"       ✅ 最小修改: 提及保留 (+5)")
+                    print(f"       [通过] 最小修改: 提及保留 (+5)")
                 else:
-                    print(f"       ⚠️ 未提及保留，可能全量替换")
+                    print(f"       [警告] 未提及保留，可能全量替换")
             elif check_type == 'replace' and prev_recs and recs:
                 # 检查是否明确说了"替换了/换掉X道"
                 replace_words = ['替换', '替代', '换掉', '换成了', '改成', '换成',
@@ -546,9 +546,9 @@ class AutoScorer:
                 has_replace = any(kw in response for kw in replace_words)
                 if has_replace:
                     a_score += 5
-                    print(f"       ✅ 单道替换: 明确说明替换了某道菜 (+5)")
+                    print(f"       [通过] 单道替换: 明确说明替换了某道菜 (+5)")
                 else:
-                    print(f"       ⚠️ 未提及替换，可能全量重推")
+                    print(f"       [警告] 未提及替换，可能全量重推")
 
             prev_recs = recs if recs else prev_recs
 
@@ -556,9 +556,9 @@ class AutoScorer:
         if first_recs:
             if len(first_recs) >= 3:
                 a_score += 5
-                print(f"       ✅ 初始推荐质量: ≥3道菜 (+5)")
+                print(f"       [通过] 初始推荐质量: ≥3道菜 (+5)")
             else:
-                print(f"       ⚠️ 初始推荐不足3道")
+                print(f"       [警告] 初始推荐不足3道")
         score += a_score
 
         # — 场景B：交互自然度 —
@@ -577,9 +577,9 @@ class AutoScorer:
                                ['？', '?', '什么', '偏好', '口味', '喜欢', '想吃什么', '忌口', '过敏'])
             if has_question:
                 b_score += 4
-                print(f"    轮{i+1}: \"{msg}\" → 主动追问 ✅ (+4) | {t_ms:.0f}ms")
+                print(f"    轮{i+1}: \"{msg}\" → 主动追问 [通过] (+4) | {t_ms:.0f}ms")
             else:
-                print(f"    轮{i+1}: \"{msg}\" → 未追问 ⚠️ | {t_ms:.0f}ms")
+                print(f"    轮{i+1}: \"{msg}\" → 未追问 [警告] | {t_ms:.0f}ms")
                 print(f"       回复: {response[:80]}...")
         score += b_score
 
@@ -600,9 +600,9 @@ class AutoScorer:
                 risky = [r['name'] for r in recs if '花生' in r.get('name', '')]
                 if not risky:
                     c_score += 7
-                    print(f"    轮{i+1}: \"{msg}\" → 未遗忘花生过敏 ✅ (+7) | {t_ms:.0f}ms")
+                    print(f"    轮{i+1}: \"{msg}\" → 未遗忘花生过敏 [通过] (+7) | {t_ms:.0f}ms")
                 else:
-                    print(f"    轮{i+1}: \"{msg}\" → 违反忌口({risky}) ❌ | {t_ms:.0f}ms")
+                    print(f"    轮{i+1}: \"{msg}\" → 违反忌口({risky}) [失败] | {t_ms:.0f}ms")
             else:
                 print(f"    轮{i+1}: \"{msg}\" → {response[:60]}... | {t_ms:.0f}ms")
         score += c_score
@@ -620,9 +620,9 @@ class AutoScorer:
         has_alert = any(kw in rsp2 for kw in ['素食', '矛盾', '冲突', '之前', '改为', '调整为'])
         if has_alert:
             d_score += 2
-            print(f"    轮2: \"红烧肉\" → 检测到素食矛盾 ✅ (+2)")
+            print(f"    轮2: \"红烧肉\" → 检测到素食矛盾 [通过] (+2)")
         else:
-            print(f"    轮2: \"红烧肉\" → 未检测矛盾 ⚠️")
+            print(f"    轮2: \"红烧肉\" → 未检测矛盾 [警告]")
             print(f"         回复: {rsp2[:80]}...")
         # D2: 减肥 vs 增肌
         session_d2 = f"eval_contra2_{int(time.time())}"
@@ -633,9 +633,9 @@ class AutoScorer:
         has_alert = any(kw in rsp for kw in ['减肥', '增肌', '矛盾', '冲突', '选择', '目标'])
         if has_alert:
             d_score += 2
-            print(f"    轮2: \"增肌\" → 检测到减肥/增肌矛盾 ✅ (+2)")
+            print(f"    轮2: \"增肌\" → 检测到减肥/增肌矛盾 [通过] (+2)")
         else:
-            print(f"    轮2: \"增肌\" → 未检测矛盾 ⚠️")
+            print(f"    轮2: \"增肌\" → 未检测矛盾 [警告]")
         # D3: 少辣 vs 川菜
         session_d3 = f"eval_contra3_{int(time.time())}"
         r = self.call_dialog("不要辣的，推荐几道菜", user_id=session_d3)
@@ -645,9 +645,9 @@ class AutoScorer:
         has_alert = any(kw in rsp for kw in ['不要辣', '少辣', '不辣', '辣', '之前', '川菜属'])
         if has_alert:
             d_score += 1
-            print(f"    轮2: \"川菜\" → 检测到辣度矛盾 ✅ (+1)")
+            print(f"    轮2: \"川菜\" → 检测到辣度矛盾 [通过] (+1)")
         else:
-            print(f"    轮2: \"川菜\" → 未检测矛盾 ⚠️")
+            print(f"    轮2: \"川菜\" → 未检测矛盾 [警告]")
         score += d_score
 
         # — 场景E：否定推荐后追加具体要求 —
@@ -666,9 +666,9 @@ class AutoScorer:
         understands_reason = any(kw in rsp2 for kw in ['重口味', '重口', '浓郁', '下饭', '红烧', '麻辣', '香辣', '换', '调整'])
         if understands_reason and recs2:
             e_score += 3
-            print(f"    轮2: \"太清淡→口味重\" → Agent理解了拒绝原因 ✅ (+3) | {t_ms:.0f}ms")
+            print(f"    轮2: \"太清淡→口味重\" → Agent理解了拒绝原因 [通过] (+3) | {t_ms:.0f}ms")
         else:
-            print(f"    轮2: \"太清淡→口味重\" → 未理解原因 ⚠️ | {t_ms:.0f}ms")
+            print(f"    轮2: \"太清淡→口味重\" → 未理解原因 [警告] | {t_ms:.0f}ms")
             print(f"         回复: {rsp2[:80]}...")
         # 检查新推荐是否和旧推荐不同
         if recs1 and recs2:
@@ -677,9 +677,9 @@ class AutoScorer:
             overlap = old_names & new_names
             if len(overlap) < len(new_names) * 0.5:  # 至少换了一半
                 e_score += 2
-                print(f"       ✅ 推荐大幅更新 (重叠{len(overlap)}/{len(new_names)}道) (+2)")
+                print(f"       [通过] 推荐大幅更新 (重叠{len(overlap)}/{len(new_names)}道) (+2)")
             else:
-                print(f"       ⚠️ 推荐变化不大 (重叠{len(overlap)}/{len(new_names)}道)")
+                print(f"       [警告] 推荐变化不大 (重叠{len(overlap)}/{len(new_names)}道)")
         score += e_score
 
         # — 场景F：多人场景——隐含冲突 —
@@ -700,10 +700,10 @@ class AutoScorer:
         # 检查是否在回复中提到了多人的约束考虑
         if any(kw in rsp for kw in ['高血压', '痛风', '低盐', '低嘌呤', '兼顾', '平衡', '不同']):
             f_score += 3
-            print(f"       ✅ 回复体现了多人约束意识 (+3)")
+            print(f"       [通过] 回复体现了多人约束意识 (+3)")
             print(f"         回复: {rsp[:100]}...")
         else:
-            print(f"       ⚠️ 回复未体现多人约束考虑")
+            print(f"       [警告] 回复未体现多人约束考虑")
         score += f_score
 
         self.category_scores['multi_turn']['score'] = min(score, 30)
@@ -826,7 +826,7 @@ class AutoScorer:
                 total_turns += 1
 
                 has_answer = len(response.strip()) > 0
-                status = "✅" if has_answer else "❌"
+                status = "[通过]" if has_answer else "[失败]"
 
                 if not has_answer:
                     empty_responses += 1
@@ -850,10 +850,10 @@ class AutoScorer:
             case_timings.append(case_ms)
             if case_ok:
                 passed += 1
-                print(f"    >> 通过 ✅ ({case_ms:.0f}ms)")
+                print(f"    >> 通过 [通过] ({case_ms:.0f}ms)")
             else:
                 failed += 1
-                print(f"    >> 未通过 ⚠️ ({case_ms:.0f}ms, 幻觉{case_hallucinations}项)")
+                print(f"    >> 未通过 [警告] ({case_ms:.0f}ms, 幻觉{case_hallucinations}项)")
 
         avg_case = sum(case_timings) / len(case_timings) if case_timings else 0
         print(f"\n  ── 对话用例汇总 ──")
@@ -886,7 +886,7 @@ class AutoScorer:
         print(f"  {'自动评分小计':14s}  {'':20s}  {auto_total:2d}/100")
 
         # 专家评审（40%）提示
-        print(f"\n  ⚠ 注意：以上为自动评分部分（占验收60%）。")
+        print(f"\n  [警告] 注意：以上为自动评分部分（占验收60%）。")
         print(f"  专家评审（占验收40%）需人工评估：")
         print(f"    - 菜品搭配合理性")
         print(f"    - 交互质量")
@@ -895,7 +895,7 @@ class AutoScorer:
 
         # 折算60%
         auto_60 = round(auto_total * 0.6, 1)
-        print(f"\n  📊 自动评分折算: {auto_total} × 60% = {auto_60}/60")
+        print(f"\n  自动评分折算: {auto_total} × 60% = {auto_60}/60")
         print("=" * 60)
         return auto_total
 

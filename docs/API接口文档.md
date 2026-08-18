@@ -299,7 +299,7 @@ curl -X POST http://localhost:5000/api/dialog \
   ],
   "agentic": true,
   "tool_calls_made": 2,
-  "nutrition_summary": "📊 营养概览\n总热量: ~850kcal ...",
+  "nutrition_summary": "营养概览\n总热量: ~850kcal ...",
   "user_preferences": {
     "allergies": ["海鲜"],
     "preferences": {"low_spicy": true, "light": true}

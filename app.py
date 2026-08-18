@@ -1268,7 +1268,7 @@ def dialog():
             if (not has_prefs and not has_allergies and dm and dm.turn_count <= 1
                     and any(q in message for q in VAGUE_QUERIES)):
                 response_text = ("好嘞！先告诉我你的口味偏好吧～喜欢清淡还是重口？"
-                                 "想吃荤还是素？有没有忌口或过敏的食材？😊")
+                                 "想吃荤还是素？有没有忌口或过敏的食材？")
                 recommendations = []
             else:
                 # 推荐意图 — Agent模式（ReAct循环）
@@ -1555,7 +1555,7 @@ def dialog():
                                 f"做法：{gen['steps']}"
                             )
                         else:
-                            response_text += ("\n\n⚠️ 很抱歉，当前推荐未通过安全检测，已为您重新筛选。"
+                            response_text += ("\n\n很抱歉，当前推荐未通过安全检测，已为您重新筛选。"
                                               "请告诉我更多偏好，帮您找到合适的菜品～")
         t_verify_dialog = round((time.perf_counter() - t_verify_start) * 1000, 2)
         
@@ -1987,7 +1987,7 @@ def compute_meal_nutrition_summary(recipe_names: list, user_ids: list = None,
                     weight = str(weight).replace('kg', '')
                 per_person_lines.append(f"  用户{uid}({age}岁/{weight}kg) ~{per_kcal:.0f}kcal ~{per_protein:.0f}g蛋白")
     
-    lines = ["", "---", "📊 **营养概览**", ""]
+    lines = ["", "---", "**营养概览**", ""]
     if per_person_lines:
         lines.extend(per_person_lines)
     else:
