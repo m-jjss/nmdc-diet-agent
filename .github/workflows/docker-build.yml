@@ -1,0 +1,51 @@
+name: Docker Build & Smoke Test
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t fotile-agent .
+
+      - name: Run container
+        run: |
+          docker run -d --name fotile-agent -p 5000:5000 \
+            -e DEEPSEEK_API_KEY="" \
+            -e DEEPSEEK_API_BASE="https://api.deepseek.com/v1" \
+            fotile-agent
+
+      - name: Wait for health (max 5 min)
+        run: |
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:5000/api/health >/dev/null 2>&1; then
+              echo "health ok after ~$((i*5))s"
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [ $ok -eq 0 ]; then
+            echo "health check timeout"
+            exit 1
+          fi
+          curl -sf http://127.0.0.1:5000/api/health
+
+      - name: Dialog smoke test
+        run: |
+          resp=$(curl -sf -X POST http://127.0.0.1:5000/api/dialog \
+            -H "Content-Type: application/json" \
+            -d '{"user_id":"ci_test","message":"推荐几道菜","reset":true}')
+          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('dialog ok, intent=', d.get('intent'), ', recs=', len(d.get('recommendations',[])))"
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs fotile-agent
