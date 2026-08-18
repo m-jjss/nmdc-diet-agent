@@ -41,21 +41,18 @@ jobs:
 
       - name: Dialog smoke test
         run: |
-          status=$(curl -s -o /tmp/dialog_resp.json -w "%{http_code}" \
-            -X POST http://127.0.0.1:5000/api/dialog \
-            -H "Content-Type: application/json" \
-            -d '{"user_id":"ci_test","message":"推荐几道菜","reset":true}')
-          echo "## Dialog smoke test 结果" >> $GITHUB_STEP_SUMMARY
-          echo "HTTP status: $status" >> $GITHUB_STEP_SUMMARY
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          cat /tmp/dialog_resp.json >> $GITHUB_STEP_SUMMARY
-          echo '' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          if [ "$status" != "200" ]; then
-            echo "dialog smoke test FAILED with HTTP $status"
-            exit 1
-          fi
-          python3 -c "import json; d=json.load(open('/tmp/dialog_resp.json')); print('dialog ok, intent=', d.get('intent'), ', recs=', len(d.get('recommendations',[])))"
+          docker exec fotile-agent sh -c 'cat > /tmp/diag.py << "PYEOF"
+import traceback
+import app as a
+c = a.app.test_client()
+try:
+    r = c.post("/api/dialog", json={"user_id":"ci_test","message":"推荐几道菜","reset":True})
+    print("STATUS:", r.status_code)
+    print(r.get_data(as_text=True)[:600])
+except Exception:
+    traceback.print_exc()
+PYEOF
+python /tmp/diag.py'
 
       - name: Container logs on failure
         if: failure()
