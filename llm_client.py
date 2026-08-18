@@ -130,6 +130,34 @@ class LocalLLMClient(LLMClient):
         # 缓存向量结果
         self.cache[cache_key + '_emb'] = embedding
         return embedding
+    
+    def chat_with_tools(self, messages: List[Dict], tools: List[Dict] = None,
+                        temperature: float = 0.1, max_tokens: int = 500) -> Dict:
+        """
+        本地模式工具调用
+        
+        不执行真实工具，直接返回本地聊天回复，保证 local 模式下 Agent 流程可运行。
+        
+        Returns:
+            {'content': 回复文本, 'tool_calls': None, 'finish_reason': 'stop'}
+        """
+        return {
+            'content': self.chat(messages),
+            'tool_calls': None,
+            'finish_reason': 'stop',
+            'reasoning_content': None,
+        }
+    
+    def chat_stream(self, messages: List[Dict], temperature: float = 0.3, max_tokens: int = 300):
+        """
+        本地模式流式输出
+        
+        将本地聊天回复按小片段逐步 yield，模拟流式效果。
+        """
+        response = self.chat(messages)
+        for i in range(0, len(response), 5):
+            yield response[i:i + 5]
+            time.sleep(0.05)
 
 
 class QwenClient(LLMClient):
