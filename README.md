@@ -57,7 +57,7 @@ Python · Flask · DeepSeek · FAISS · sentence-transformers · Docker
 ├── dialog_enhancer.py      # 对话管理器（意图识别/偏好提取）
 ├── result_verifier.py      # 结果验证器（幻觉/过敏/约束检测）
 ├── gradio_app.py           # Gradio Web 前端界面
-├── eval.py                 # 竞赛自动评分脚本（25组用例，100分制）
+├── eval.py                 # 竞赛自动评分脚本（基础/复杂/多轮/性能4维度，含25组对话用例）
 ├── config.py               # 配置中心（环境变量 + 默认值）
 ├── requirements.txt        # Python 依赖
 ├── .env.example            # 环境变量模板
@@ -68,5 +68,5 @@ Python · Flask · DeepSeek · FAISS · sentence-transformers · Docker
 ├── user_profiles_standardized.json  # 用户健康档案（50 份）
 ├── nutrition_database.json           # 营养数据库（185 种食材）
 ├── ingredient_synonym_map.json       # 食材同义词映射
-└── 对话用例.json           # 大赛提供的 20 组对话用例
+└── 对话用例.json           # 大赛提供的 25 组对话用例
 ```
