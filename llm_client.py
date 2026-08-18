@@ -548,7 +548,9 @@ class DeepSeekClient(LLMClient):
             'messages': messages,
             'temperature': temperature,
             'max_tokens': max_tokens,
-            'stream': True
+            'stream': True,
+            # 禁用 thinking mode：减少首Token延迟（rethink 会先输出 reasoning_content 再输出正文）
+            'thinking': {'type': 'disabled'}
         }
         
         try:

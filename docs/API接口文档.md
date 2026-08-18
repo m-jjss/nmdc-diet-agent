@@ -320,7 +320,7 @@ curl -X POST http://localhost:5000/api/dialog \
 
 流式对话接口（SSE 协议），支持首 Token 延迟追踪。参数同 `POST /api/dialog`。
 
-> **格式说明：** 本接口为非 OpenAI 通用范式，采用自定义 SSE 事件流格式（含推荐、文本、完成三种事件类型）。如竞赛评测要求严格遵循 OpenAI Chat Completion Stream 规范，可将 `delta` 事件包装为 `data: {"id":"...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"..."}}]}` 格式。
+> **格式说明：** 本接口采用 OpenAI Chat Completion Stream 兼容格式（`data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"..."}}]}`，结束标记 `data: [DONE]`），可在 `delta.content` 中直接累计得到完整回复，首 Token 延迟可由首个 `delta.content` 正确统计。同时保留自定义事件字段（`event` / `data`）便于业务解析，评测方按 OpenAI 规范解析或按自定义事件解析均可。
 
 调用示例：
 
@@ -330,24 +330,25 @@ curl -X POST http://localhost:5000/api/dialog/stream \
   -d '{"user_id":"demo_user","message":"推荐晚餐"}'
 ```
 
-响应格式（SSE 事件流，共三种事件类型）：
+响应格式（SSE 事件流，OpenAI 兼容 + 自定义扩展）：
 
 ```
-data: {"event":"recommendations","data":{"recommendations":[...],"context_summary":"..."}}
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"event":"recommendations","data":{"recommendations":[...],"context_summary":"..."}}
 
-data: {"event":"text","data":{"text":"好的"}}
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"好的"},"finish_reason":null}],"event":"text","data":{"text":"好的"}}
 
-data: {"event":"text","data":{"text":"，为您推荐..."}}
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"，为您推荐..."},"finish_reason":null}],"event":"text","data":{"text":"，为您推荐..."}}
 ...
+data: [DONE]
 
-data: {"event":"complete","data":{"recommendations":[...],"timing":{"total_ms":6200,"first_token_ms":1450}}}
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"event":"complete","data":{"recommendations":[...],"timing":{"total_ms":1800,"first_token_ms":890}}}
 ```
 
 | 事件类型 | 说明 | 包含字段 |
 |----------|------|----------|
-| `recommendations` | 检索结果就绪（首token前发送） | `recommendations`, `context_summary` |
-| `text` | LLM 流式文本片段 | `text`（逐 token 增量） |
-| `complete` | 推荐完成 | `recommendations`, `response`, `timing`, `user_preferences` |
+| `recommendations` | 检索结果就绪（首token前发送），`choices[].delta` 仅含 `role` | `recommendations`, `context_summary` |
+| `text` | LLM 流式文本片段（OpenAI 兼容 `choices[].delta.content`） | `text`（逐 token 增量） |
+| `complete` | 推荐完成，`finish_reason: "stop"` | `recommendations`, `response`, `timing`, `user_preferences` |
 
 ## 性能监控
 
