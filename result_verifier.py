@@ -62,6 +62,9 @@ class ResultVerifier:
         missing = []
         for rec in recommendations:
             name = rec.get('name', '')
+            # 标记为 generated 的菜谱为 LLM 实时生成（赛题允许），豁免库内存在性检查
+            if rec.get('generated'):
+                continue
             if name and name not in self.recipe_names:
                 missing.append(name)
         return missing

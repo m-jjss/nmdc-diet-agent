@@ -807,6 +807,125 @@ def search_recipes():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _generate_fallback_recipe(user_message: str, user_id: str = None, user_ids: list = None,
+                              dm=None, engine=None, llm=None) -> Optional[dict]:
+    """
+    约束极紧、菜谱库无法满足时，由 LLM 现场生成一道符合约束的新菜谱（赛题加分项）。
+
+    仅在现有菜谱检索结果为 0 时调用。生成结果通过约束引擎校验后才返回，
+    返回的菜谱带 `generated: True` 标记，ResultVerifier 将豁免其库内存在性检查。
+
+    Args:
+        user_message: 用户消息
+        user_id: 用户ID
+        user_ids: 多人ID列表
+        dm: DialogManager
+        engine: 约束引擎
+        llm: LLM客户端
+
+    Returns:
+        dict: 生成的菜谱（含 generated 标记），失败返回 None
+    """
+    # 收集用户约束（过敏原/疾病/特殊人群）
+    constraints = {'allergies': set(), 'diseases': set(), 'special_groups': set()}
+    if engine:
+        if user_ids:
+            for uid in user_ids:
+                up = engine.get_user_profile(uid) or {}
+                constraints['allergies'].update(up.get('allergies', []) or [])
+                constraints['diseases'].update(up.get('diseases', []) or [])
+                constraints['special_groups'].update(up.get('special_groups', []) or [])
+        elif user_id and str(user_id).isdigit() and 1 <= int(user_id) <= 50:
+            up = engine.get_user_profile(user_id) or {}
+            constraints['allergies'].update(up.get('allergies', []) or [])
+            constraints['diseases'].update(up.get('diseases', []) or [])
+            constraints['special_groups'].update(up.get('special_groups', []) or [])
+    if dm:
+        up = dm.user_preferences or {}
+        constraints['allergies'].update(up.get('allergies', []) or [])
+
+    allergies = list(constraints['allergies'])
+    diseases = list(constraints['diseases'])
+    special = list(constraints['special_groups'])
+
+    allergy_txt = '、'.join(allergies) if allergies else '无'
+    disease_txt = '、'.join(diseases) if diseases else '无'
+    special_txt = '、'.join(special) if special else '无'
+
+    prompt = (
+        f"你是专业营养师。用户需求：{user_message}\n"
+        f"用户健康约束（必须全部满足，任一违反即失败）：\n"
+        f"- 过敏原（禁止出现任何相关食材）：{allergy_txt}\n"
+        f"- 疾病饮食禁忌（如控盐/控糖/控嘌呤）：{disease_txt}\n"
+        f"- 特殊人群限制（如孕妇/哺乳期）：{special_txt}\n\n"
+        f"现有菜谱库中没有符合以上约束的菜品，请你现场设计一道完全合规的新菜谱。\n"
+        f"要求：菜名简洁真实、食材常见易得、烹饪方式健康，必须严格避开上述所有过敏原和禁忌。\n"
+        f"注意：tags 标签中禁止出现过敏原或禁忌食材名称（如不要写「无海鲜」「低嘌呤」这类标签），"
+        f"只写口味或菜系类标签（如「清淡」「家常」「低脂」「控糖」「蒸菜」）。\n"
+        f"只输出 JSON，不要任何解释，格式："
+        f'{{"name": "菜名", "ingredients": ["食材1", "食材2", "食材3"], "steps": "烹饪步骤简述", "tags": ["标签1", "标签2"]}}'
+    )
+
+    # 最多重试 2 次，避免单次生成因 LLM 输出不合规而失败
+    for attempt in range(2):
+        try:
+            content = llm.chat([{'role': 'user', 'content': prompt}], temperature=0.4, max_tokens=400)
+        except Exception as e:
+            print(f"[GenRecipe] LLM调用失败: {e}")
+            return None
+
+        # 解析 LLM 输出的 JSON（容忍 ``` 包裹）
+        text = (content or '').strip()
+        text = text.removeprefix('```json').removeprefix('```').removesuffix('```').strip()
+        start, end = text.find('{'), text.rfind('}')
+        if start == -1 or end == -1:
+            print(f"[GenRecipe] 解析失败，无法找到JSON: {text[:120]}")
+            return None
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError as e:
+            print(f"[GenRecipe] JSON解析失败: {e}")
+            return None
+
+        name = str(data.get('name', '')).strip()
+        ingredients = data.get('ingredients', [])
+        if not name or not ingredients:
+            print("[GenRecipe] 生成结果缺少菜名或食材")
+            return None
+
+        recipe = {
+            'name': name,
+            'ingredients': ingredients if isinstance(ingredients, list) else [str(ingredients)],
+            'steps': str(data.get('steps', '')),
+            'tags': data.get('tags', []) if isinstance(data.get('tags'), list) else [str(data.get('tags', ''))],
+            'generated': True,
+        }
+
+        # 用约束引擎校验生成的菜谱是否合规
+        if engine:
+            profile = {}
+            if user_ids:
+                profile = engine.merge_multi_user_constraints(user_ids)
+            elif user_id and str(user_id).isdigit() and 1 <= int(user_id) <= 50:
+                profile = engine.get_user_profile(user_id) or {}
+            if profile:
+                passed, violations = engine.check_constraints(recipe, profile)
+                if not passed:
+                    print(f"[GenRecipe] 第{attempt+1}次生成未通过约束校验: {violations}")
+                    # 追加失败原因，让 LLM 重新设计
+                    prompt += (
+                        f"\n\n注意：上次设计不合格，违规原因：{'；'.join(violations)}。"
+                        f"请重新设计，务必严格避开上述过敏原和禁忌食材。"
+                    )
+                    continue
+
+        print(f"[GenRecipe] 生成新菜谱: {name} (食材{len(ingredients)}种)")
+        return recipe
+
+    print("[GenRecipe] 重试仍失败，放弃生成")
+    return None
+
+
 def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = None,
                        dm=None, retriever=None, engine=None, llm=None,
                        max_iterations: int = 3) -> dict:
@@ -999,6 +1118,24 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
         else:
             response_text = "好的，你想吃点什么类型的菜呢？我可以帮你推荐～"
         print(f"[Agent] 使用默认回复: {response_text[:80]}...")
+
+    # — 兜底生成：菜谱库无匹配且非追问时，LLM现场生成一道新菜（赛题加分项）—
+    if not recommendations and not ask_question:
+        print("[Agent] 检索结果为空，尝试生成符合约束的新菜谱...")
+        gen = _generate_fallback_recipe(
+            user_message, user_id=user_id, user_ids=user_ids,
+            dm=dm, engine=engine, llm=llm
+        )
+        if gen:
+            recommendations = [gen]
+            ings = '、'.join(gen['ingredients'])
+            response_text = (
+                f"菜谱库中暂时没有完全符合您需求的菜品，我为您现场设计了一道新菜——"
+                f"【{gen['name']}】（建议菜谱·生成）\n"
+                f"食材：{ings}\n"
+                f"做法：{gen['steps']}"
+            )
+            print(f"[Agent] 已生成新菜谱: {gen['name']}")
 
     # 记录到历史
     if dm:
@@ -1403,8 +1540,23 @@ def dialog():
                 if violation_recipes:
                     recommendations = [r for r in recommendations if r.get('name', '') not in violation_recipes]
                     if not recommendations:
-                        response_text += ("\n\n⚠️ 很抱歉，当前推荐未通过安全检测，已为您重新筛选。"
-                                          "请告诉我更多偏好，帮您找到合适的菜品～")
+                        # 全部被拦截：尝试现场生成一道合规新菜谱（赛题加分项）
+                        gen = _generate_fallback_recipe(
+                            message, user_id=user_id, user_ids=user_ids,
+                            dm=dm, engine=engine, llm=llm
+                        )
+                        if gen:
+                            recommendations = [gen]
+                            ings = '、'.join(gen['ingredients'])
+                            response_text += (
+                                f"\n\n为符合您的健康约束，我现场设计了一道新菜——"
+                                f"【{gen['name']}】（建议菜谱·生成）\n"
+                                f"食材：{ings}\n"
+                                f"做法：{gen['steps']}"
+                            )
+                        else:
+                            response_text += ("\n\n⚠️ 很抱歉，当前推荐未通过安全检测，已为您重新筛选。"
+                                              "请告诉我更多偏好，帮您找到合适的菜品～")
         t_verify_dialog = round((time.perf_counter() - t_verify_start) * 1000, 2)
         
         t_total = round((time.perf_counter() - t_request_start) * 1000, 2)
@@ -1519,6 +1671,14 @@ def dialog_stream():
             t_filter = time.perf_counter()
             
             recommendations = results[:5]
+            # 检索为空时，尝试生成一道合规新菜谱（赛题加分项）
+            if not recommendations:
+                gen = _generate_fallback_recipe(
+                    message, user_id=user_id, user_ids=user_ids,
+                    dm=dm, engine=engine, llm=llm
+                )
+                if gen:
+                    recommendations = [gen]
             recipe_names = [r['name'] for r in recommendations]
             dm.add_recommended_recipes(recipe_names)
             
