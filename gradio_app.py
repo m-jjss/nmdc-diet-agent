@@ -227,7 +227,9 @@ class ChatSession:
         label = intent_labels.get(intent, "")
 
         if recommendations:
-            lines.append(f"### {label} 推荐菜品\n")
+            # 避免标题重复（如 label="推荐" 时不再拼成 "推荐 推荐菜品"）
+            title = f"{label} 推荐菜品" if label and label != "推荐" else "推荐菜品"
+            lines.append(f"### {title}\n")
             for i, r in enumerate(recommendations, 1):
                 name = r.get("name", "未知")
                 tags = r.get("tags", [])
