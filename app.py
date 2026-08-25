@@ -319,6 +319,78 @@ AGENT_TOOLS = [
     }
 ]
 
+# 无意义/口语化内容，检索与排除时忽略
+_JUNK_EXCLUDES = {'了', '的', '点', '些', '它', '吧', '啊', '呀', '嘛', '哦', '嗯', '呢',
+                 '这些', '那些', '一点', '太多', '太', '顿', '餐'}
+
+
+def _clean_search_query(query: str) -> tuple:
+    """
+    清洗检索 query：剔除口语动词前缀与否定片段，并解析出应排除的食材。
+
+    解决"我想吃虾搜不到""不吃虾无法屏蔽"两类问题：
+    - "我想吃虾"   -> ("虾", [])            # 去除口语前缀，保留核心词
+    - "来一份红烧肉" -> ("红烧肉", [])
+    - "不吃虾"     -> ("", ["虾"])           # 提取排除食材，正向词为空
+    - "对虾过敏"   -> ("", ["虾"])
+    - "不要辣的"   -> ("", ["辣"])
+
+    Returns:
+        (core_query, excludes): 清洗后的核心检索词（可能为空串），
+        以及从 query 中解析出的应排除食材列表（去重）。
+    """
+    if not query:
+        return "", []
+    q = query.strip()
+    excludes = []
+
+    # 1) 提取并移除否定片段（"不吃X""对X过敏""忌口X"等）
+    neg_patterns = [
+        r'(?:不吃|不能吃|不要吃|不想吃|别吃|别放|不放|不加|不要|别|忌口|避免|避开|去掉|忌)([^，。、;；!！?？\s]{1,8})',
+        r'对([^，。、;；!！?？\s]{1,8})过敏',
+        r'(?<![不没])(?![我你他她它咱俺])([^，。、;；!！?？\s]{1,8})过敏(?:于)?([^，。、;；!！?？\s]{1,8})?',
+    ]
+    for pat in neg_patterns:
+        for m in re.finditer(pat, q):
+            item = (m.group(1) or m.group(2) or '').strip('的了呗吧呀哦嗯嘛啊')
+            if 1 <= len(item) <= 10 and item not in _JUNK_EXCLUDES:
+                excludes.append(item)
+            q = q.replace(m.group(0), ' ')
+
+    # 2) 循环剔除口语动词前缀（长词优先，避免误删核心词）
+    prefixes = [
+        '我特别想吃', '我想吃点', '我想喝点', '我想喝', '我想吃', '我想来', '我要吃', '我要喝',
+        '今晚想吃', '今天想吃', '晚上想吃', '中午想吃', '想吃点', '想喝点', '想喝', '想吃',
+        '来一份', '来份', '来点', '点一份', '点份', '给我推荐', '帮我推荐', '推荐一下',
+        '帮我来', '给我来', '给我', '帮我', '今天想', '今晚想', '弄点', '做点', '整点',
+        '一道', '一份', '推荐', '想', '要', '来',
+    ]
+    cleaned = q
+    for _ in range(6):
+        matched = False
+        for p in prefixes:
+            if cleaned.startswith(p):
+                cleaned = cleaned[len(p):].lstrip('，。、, ')
+                matched = True
+                break
+        if not matched:
+            break
+
+    # 3) 清理空白与残留标点
+    core = re.sub(r'[\s，。、,;；!！?？]+', '', cleaned).strip()
+    core = re.sub(r'^(好的|好|吧|啊|呀|哦|嗯|呢|嘛)+$', '', core)
+    # 孤立人称代词/语气词视为空
+    core = re.sub(r'^(我|俺|咱们|人家|你|你们|他|他们|她|她们|它|都|就|还)+$', '', core)
+    # 去掉开头孤立量词与结尾"的/了"残留（"点甜的"->"甜"，"清淡的"->"清淡"）
+    core = re.sub(r'^(点|份|道|个|盘|碗|碟)(?=[\u4e00-\u9fff])', '', core)
+    core = re.sub(r'[的了]$', '', core)
+
+    # 去重（保持顺序）
+    seen = set()
+    excludes = [e for e in excludes if not (e in seen or seen.add(e))]
+
+    return core, excludes
+
 
 def _execute_agent_tool(tool_name: str, tool_args: dict, user_id: str = None, user_ids: list = None,
                          retriever=None, engine=None, dm=None) -> str:
@@ -328,9 +400,14 @@ def _execute_agent_tool(tool_name: str, tool_args: dict, user_id: str = None, us
     if tool_name == "search_recipes":
         query = tool_args.get("query", "")
         top_k = tool_args.get("top_k", 5)
-        filters = dm.get_search_filters() if dm else {}
+        filters = dict(dm.get_search_filters()) if dm else {}
+        # 清洗 query：去口语前缀 + 提取否定排除食材，避免"我想吃虾/不吃虾"检索失效
+        core, neg_ex = _clean_search_query(query)
+        if neg_ex:
+            filters['exclude_ingredients'] = list(set(filters.get('exclude_ingredients', []) + neg_ex))
+        search_q = core if core else ('晚餐' if neg_ex else query)
         try:
-            results = retriever.search(query, top_k=top_k, filters=filters)
+            results = retriever.search(search_q, top_k=top_k, filters=filters)
             if user_ids:
                 results = engine.filter_by_constraints(results, user_ids=user_ids)
             elif user_id:
@@ -520,16 +597,22 @@ def recommend():
         user_id = data.get('user_id', '')
         user_ids = data.get('user_ids', [])  # 多人用餐场景
         top_k = data.get('top_k', 5)
-        filters = data.get('filters', {})
+        filters = dict(data.get('filters', {}) or {})
 
         # 获取组件实例
         retriever = get_retriever()
         engine = get_engine()
         llm = get_llm()
 
+        # 清洗检索词：去口语前缀 + 提取否定排除，避免"我想吃虾/不吃虾"检索失效
+        core, neg_ex = _clean_search_query(query)
+        if neg_ex:
+            filters['exclude_ingredients'] = list(set(filters.get('exclude_ingredients', []) + neg_ex))
+        search_q = core if core else ('晚餐' if neg_ex else query)
+
         # 1. 检索菜谱
         search_start = time.perf_counter()
-        results = retriever.search(query, top_k=top_k * 2, filters=filters)
+        results = retriever.search(search_q, top_k=top_k * 2, filters=filters)
         search_time = (time.perf_counter() - search_start) * 1000
 
         # 2. 应用约束过滤（支持单人 user_id 或多人 user_ids）
@@ -795,7 +878,9 @@ def search_recipes():
     
     try:
         retriever = get_retriever()
-        results = retriever.search(query, top_k=top_k)
+        core, neg_ex = _clean_search_query(query)
+        search_q = core if core else query
+        results = retriever.search(search_q, top_k=top_k, filters={'exclude_ingredients': neg_ex} if neg_ex else None)
         
         return jsonify({
             'success': True,
@@ -1068,7 +1153,12 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
         print(f"[Agent] 推荐不足{len(recommendations)}道，自动补齐...")
         existing_names = {r.get('name', '') for r in recommendations}
         try:
-            fill_results = retriever.search(user_message, top_k=5)
+            core, neg_ex = _clean_search_query(user_message)
+            fill_filters = dict(dm.get_search_filters()) if dm else {}
+            if neg_ex:
+                fill_filters['exclude_ingredients'] = list(set(fill_filters.get('exclude_ingredients', []) + neg_ex))
+            fill_q = core if core else ('晚餐' if neg_ex else user_message)
+            fill_results = retriever.search(fill_q, top_k=5, filters=fill_filters)
             for r in fill_results:
                 if len(recommendations) >= 5:
                     break
@@ -1095,7 +1185,8 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
         if meat_count == len(recommendations):  # 全荤无素
             print(f"[Agent] 全荤无素({meat_count}荤/{veg_count}素)，自动搜索素菜...")
             try:
-                veg_results = retriever.search("素菜 蔬菜 清淡 凉拌 蒸菜", top_k=3)
+                veg_filters = dict(dm.get_search_filters()) if dm else {}
+                veg_results = retriever.search("素菜 蔬菜 清淡 凉拌 蒸菜", top_k=3, filters=veg_filters)
                 existing_names = {r.get('name', '') for r in recommendations}
                 replaced = 0
                 for v in veg_results:
@@ -1246,12 +1337,25 @@ def dialog():
         if llm_result:
             intent = llm_result.get('intent', 'recommend')
             if llm_result.get('preferences'):
+                # 关键：LLM 提取的偏好必须写入 dm，否则 get_search_filters() 拿不到排除词，
+                # 导致"不吃虾"等否定约束在检索/验证阶段全部失效
+                dm._update_preferences(llm_result['preferences'])
                 preferences = llm_result['preferences']
             else:
-                preferences = dm.extract_preferences(message)  # 关键词回退
+                preferences = dm.extract_preferences(message)  # 关键词回退（内部会写入）
         else:
             intent = dm.detect_intent(message)  # 关键词回退
-            preferences = dm.extract_preferences(message)  # 关键词回退
+            preferences = dm.extract_preferences(message)  # 关键词回退（内部会写入）
+        
+        # 兜底1：强制关键词提取排除食材，保证"不吃X"始终进入 excluded_ingredients
+        if not dm.user_preferences.get('excluded_ingredients'):
+            dm.extract_preferences(message)
+        # 兜底2：从原文解析否定/过敏排除（覆盖"对X过敏"等关键词未覆盖的表达）
+        _, neg_ex = _clean_search_query(message)
+        if neg_ex:
+            for e in neg_ex:
+                if e not in dm.user_preferences['excluded_ingredients']:
+                    dm.user_preferences['excluded_ingredients'].append(e)
         
         # 意图名归一化：兼容 LLM 可能输出的旧别名，映射到 dialog() 分支使用的标准名
         INTENT_ALIASES = {
@@ -1444,7 +1548,11 @@ def dialog():
                 
                 # 只搜索需要替换的部分
                 filters = dm.get_search_filters()
-                results = retriever.search(resolved_message, top_k=10, filters=filters)
+                core, neg_ex = _clean_search_query(resolved_message)
+                if neg_ex:
+                    filters['exclude_ingredients'] = list(set(filters.get('exclude_ingredients', []) + neg_ex))
+                search_q = core if core else resolved_message
+                results = retriever.search(search_q, top_k=10, filters=filters)
                 
                 if user_ids:
                     results = engine.filter_by_constraints(results, user_ids=user_ids)
@@ -1541,8 +1649,11 @@ def dialog():
                 verify_profile['diseases'] = list(set(verify_profile['diseases']))
                 verify_profile['special_groups'] = list(set(verify_profile['special_groups']))
             else:
-                # 非预置用户：从对话偏好中获取过敏信息
-                verify_profile['allergies'] = dm.user_preferences.get('allergies', [])
+                # 非预置用户：从对话偏好中获取过敏信息，并合并明确"不吃"的食材（同样视为硬约束）
+                verify_profile['allergies'] = list(set(
+                    dm.user_preferences.get('allergies', []) +
+                    dm.user_preferences.get('excluded_ingredients', [])
+                ))
             verification_report = verifier.verify(recommendations, verify_profile)
             # 硬约束违规：从推荐列表中移除违规菜品并提示用户
             if not verification_report['all_passed']:
@@ -1680,8 +1791,15 @@ def dialog_stream():
         def generate():
             t_start = time.perf_counter()
             filters = dm.get_search_filters()
+            core, neg_ex = _clean_search_query(message)
+            if neg_ex:
+                filters['exclude_ingredients'] = list(set(filters.get('exclude_ingredients', []) + neg_ex))
+                for e in neg_ex:
+                    if e not in dm.user_preferences.get('excluded_ingredients', []):
+                        dm.user_preferences['excluded_ingredients'].append(e)
+            search_q = core if core else ('晚餐' if neg_ex else message)
             
-            results = retriever.search(message, top_k=10, filters=filters)
+            results = retriever.search(search_q, top_k=10, filters=filters)
             t_search = time.perf_counter()
             
             if user_ids:

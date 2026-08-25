@@ -381,22 +381,20 @@ class RAGRetriever:
         """
         filtered = recipes
         
-        # 排除指定食材（在食材、描述、做法中检查）
+        # 排除指定食材（在菜名、食材、描述、做法中做子串检查）
         exclude_ingredients = filters.get('exclude_ingredients', [])
         if exclude_ingredients:
-            exclude_set = set([str(i).lower() for i in exclude_ingredients])
-            filtered = [
-                r for r in filtered
-                if not exclude_set.intersection(
-                    set([str(i).lower() for i in r.get('ingredients', [])]) |
-                    set(r.get('description', '').lower().split()) |
-                    set(r.get('method', '').lower().split())
-                ) and not any(
-                    ex in str(r.get('description', '')).lower() or
-                    ex in str(r.get('method', '')).lower()
-                    for ex in exclude_set
-                )
-            ]
+            exclude_set = [str(i).lower() for i in exclude_ingredients]
+
+            def _excluded(r):
+                name_l = str(r.get('name', '')).lower()
+                ing_l = ' '.join(str(i).lower() for i in r.get('ingredients', []))
+                desc_l = str(r.get('description', '')).lower()
+                meth_l = str(r.get('method', '')).lower()
+                return any(ex in name_l or ex in ing_l or ex in desc_l or ex in meth_l
+                           for ex in exclude_set)
+
+            filtered = [r for r in filtered if not _excluded(r)]
         
         # 排除指定菜品
         exclude_recipes = filters.get('exclude_recipes', [])
