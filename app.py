@@ -323,6 +323,10 @@ AGENT_TOOLS = [
 _JUNK_EXCLUDES = {'了', '的', '点', '些', '它', '吧', '啊', '呀', '嘛', '哦', '嗯', '呢',
                  '这些', '那些', '一点', '太多', '太', '顿', '餐'}
 
+# 口语化"想吃刺激/重口" → 改写为可检索的辣味关键词（避免"刺激"搜不到菜）
+_SPICY_WANT_TERMS = ['刺激', '过瘾', '重口', '重口味', '口味重', '够味', '带劲', '下饭']
+_SPICY_SEARCH_QUERY = '辣 麻辣 香辣 辣椒 剁椒 川菜 湘菜 辛辣'
+
 
 def _clean_search_query(query: str) -> tuple:
     """
@@ -385,6 +389,14 @@ def _clean_search_query(query: str) -> tuple:
     core = re.sub(r'^(点|份|道|个|盘|碗|碟)(?=[\u4e00-\u9fff])', '', core)
     core = re.sub(r'[的了]$', '', core)
 
+    # 口味语义改写：把"刺激/过瘾/重口"等口语口味词改写为辣味可检索词，
+    # 避免"我想吃点刺激的" -> 检索词"刺激"搜不到任何菜而退化为清淡推荐
+    if core and len(core) <= 8:
+        for _t in _SPICY_WANT_TERMS:
+            if _t in core:
+                core = _SPICY_SEARCH_QUERY
+                break
+
     # 去重（保持顺序）
     seen = set()
     excludes = [e for e in excludes if not (e in seen or seen.add(e))]
@@ -417,7 +429,7 @@ def _execute_agent_tool(tool_name: str, tool_args: dict, user_id: str = None, us
                 "name": r.get("name", "未知"),
                 "cuisine": r.get("cuisine", ""),
                 "cooking_method": r.get("cooking_method", ""),
-                "main_ingredients": r.get("main_ingredients", [])[:3],
+                "main_ingredients": r.get("main_ingredients", r.get("ingredients", []))[:3],
             } for r in recipes], ensure_ascii=False)
         except Exception as e:
             return f"搜索失败: {e}"
@@ -1012,6 +1024,123 @@ def _generate_fallback_recipe(user_message: str, user_id: str = None, user_ids: 
     return None
 
 
+def _is_meat_recipe(recipe: dict) -> bool:
+    """
+    判断一道菜是否为荤菜（含肉类/海鲜）。
+
+    同时检查菜名与食材文本，覆盖"清蒸海蛎子""姜辣凤爪""家常麻辣香锅"等
+    菜名不含"肉/鱼/虾/蟹"字眼但实际是荤菜的条目。
+
+    Args:
+        recipe: 菜谱数据（需含 name，可选 ingredients）
+
+    Returns:
+        True 表示荤菜，False 表示素菜
+    """
+    MEAT_KWS = ['肉', '鸡', '鸭', '鱼', '虾', '蟹', '贝', '牛', '猪', '羊', '鹅', '驴',
+                '排骨', '香肠', '腊', '腿', '翅', '肝', '腰', '脑', '鲍', '参', '蛤', '鱿',
+                '鳗', '蚝', '蛎', '螺', '蚌', '爪', '掌', '蹄', '肘', '肚', '舌', '腩',
+                '鲈', '鳕', '鲢', '鲫', '鲤', '鳝', '蛙', '烤鸭', '火腿', '培根',
+                '凤爪', '鸡爪', '鸭掌', '猪蹄', '牛筋']
+    text = recipe.get('name', '') or ''
+    ing = recipe.get('ingredients', '')
+    if isinstance(ing, str):
+        text += ' ' + ing
+    elif isinstance(ing, list):
+        text += ' ' + ' '.join(str(i) for i in ing)
+    return any(k in text for k in MEAT_KWS)
+
+
+def _trim_by_relevance(recommendations: list, core_query: str, retriever, max_n: int = 5,
+                       filters: Optional[Dict] = None) -> list:
+    """
+    按用户核心查询相关度对 Agent 结果池重排并裁剪/补足。
+
+    多轮 ReAct 搜索可能跑偏（如"想吃虾"却搜出一堆蒸菜），导致结果池里根本没有
+    与需求相关的菜。此函数用核心查询重新检索得到相关菜：
+    1. 优先保留池内与核心查询相关的菜；
+    2. 若还不够 max_n 道，直接用核心查询的相关菜补足；
+    3. 最后才用池内其余菜兜底。
+
+    Args:
+        recommendations: Agent 合并后的结果池（已补全完整菜谱）
+        core_query: 用户核心检索词（已清洗/口味改写）
+        retriever: RAG 检索器
+        max_n: 最终保留的推荐数量上限
+        filters: 检索过滤条件（排除食材等），补足搜索时同样生效
+
+    Returns:
+        相关度排序后的推荐列表
+    """
+    if not recommendations:
+        return recommendations
+    pool = {}
+    for r in recommendations:
+        n = r.get('name', '')
+        if n and n not in pool:
+            pool[n] = r
+    try:
+        ranked = retriever.search(core_query, top_k=max_n * 4, filters=filters) if core_query else []
+    except Exception:
+        ranked = []
+    ranked_names = [r.get('name', '') for r in ranked if r.get('name')]
+    ranked_map = {r.get('name', ''): r for r in ranked if r.get('name')}
+
+    ordered, seen = [], set()
+    # 1) 池内与核心查询相关的菜（按相关度排序优先）
+    for n in ranked_names:
+        if n in pool and n not in seen:
+            ordered.append(pool[n])
+            seen.add(n)
+        if len(ordered) >= max_n:
+            return ordered[:max_n]
+    # 2) 用核心查询的相关菜补足（解决池内无相关菜的问题）
+    for n in ranked_names:
+        if n not in seen:
+            r = ranked_map.get(n)
+            if r:
+                ordered.append(r)
+                seen.add(n)
+        if len(ordered) >= max_n:
+            return ordered[:max_n]
+    # 3) 池内其余菜兜底
+    for n, r in pool.items():
+        if n not in seen:
+            ordered.append(r)
+            seen.add(n)
+        if len(ordered) >= max_n:
+            break
+    return ordered[:max_n]
+
+
+def _build_consistent_response(recommendations: list) -> str:
+    """
+    基于结构化推荐列表构建确定性叙述，保证叙述文案与列表完全一致。
+
+    Agent 模式中 LLM 可能编造列表外的菜名（如"鱼香茄子"），
+    与结构化推荐列表脱节。此函数根据实际列表重建一段自然、口语化的推荐语。
+
+    Args:
+        recommendations: 结构化推荐菜谱列表
+
+    Returns:
+        与列表一致的推荐叙述文本
+    """
+    names = [r.get('name', '') for r in recommendations if r.get('name')]
+    if not names:
+        return ""
+
+    meat = [r.get('name', '') for r in recommendations if _is_meat_recipe(r)]
+    veg = [n for n in names if n not in set(meat)]
+
+    parts = []
+    if meat:
+        parts.append("荤菜：" + "、".join(meat))
+    if veg:
+        parts.append("素菜：" + "、".join(veg))
+    return "帮你挑了几道搭配起来不错的菜：" + "；".join(parts) + "。你看看有没有合口味的？有忌口或偏好，我再帮你调整。"
+
+
 def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = None,
                        dm=None, retriever=None, engine=None, llm=None,
                        max_iterations: int = 3) -> dict:
@@ -1054,10 +1183,11 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
 4. 禁止用ask_user问"几个人吃？"、"什么口味？"——直接搜，搜完直接推荐
 5. 禁止只说话不调工具——每次回复要么调search_recipes，要么列出推荐结果
 6. 最小修改原则：如果上一轮已有推荐列表且用户只是追加约束（如"不要太油腻"），保留大部分原有推荐，只替换与新约束冲突的菜品。除非用户明确说"全部换掉"，否则至少保留一半原有推荐。
-7. 荤素搭配铁律：每轮推荐至少包含1-2道素菜。搜索时分别搜索荤菜和素菜（用不同query），最终推荐中荤素比例不低于3:2。
-   烹饪多样性：推荐中应包含至少3种不同烹饪方式（如炒、蒸、煮、炖、烤、凉拌等），避免全是同一种做法。
+7. 荤素搭配铁律：每轮推荐至少包含1-2道素菜。搜索时分别搜索荤菜和素菜（用不同query），最终推荐中荤素比例不低于3:2。荤素搜索必须在同一口味主题下进行（如用户要辣，就搜"辣味素菜"而不是"清淡蒸菜"），禁止搜出口味不一致的菜来凑数。不要为凑"烹饪方式多样"而搜索与用户需求无关的菜。
 8. 回复中禁止使用 emoji、颜文字或任何表情符号，只用纯文本（可使用编号、换行、星号加粗等常规排版）。
 9. 回复要自然口语化，像真人营养师聊天，有温度。避免"好的，为您推荐以下菜品：A、B、C。您可以告诉我是否需要调整"这类机械模板句；引导语可根据菜品特点变化（如"这几道口味清淡，正适合你"、"按你说的，帮你挑了几道下饭的"）。
+10. 铁律：最终回复里提到的每一道菜，必须严格来自 search_recipes 工具返回的结果列表。禁止编造、脑补、添加工具结果中不存在的菜名（如"鱼香茄子""红烧肉"等若不在搜索结果中就绝不能写）。回复与搜索结果是同一份菜，可以合并菜名，但不能凭空造菜。
+11. 冷热搭配加分：当推荐菜数≥4道（尤其"一桌菜/聚餐/宴客/多人用餐"等场景）时，尽量包含1道凉菜或凉拌菜（如凉拌木耳、凉拌黄瓜、皮蛋豆腐），实现冷热搭配，让一餐更完整；只推荐1-3道单点菜时不强制。
 
 当前约束: {pref_summary}
 上一轮推荐列表（保留它们，除非用户要求全部换）: {dm.recommended_recipes[-5:] if dm and dm.recommended_recipes else '无'}"""
@@ -1068,6 +1198,7 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
     ]
 
     recommendations = []
+    rec_pool = {}  # 合并多次 search_recipes 结果，避免后一次覆盖前一次
     response_text = None
     tool_count = 0
     ask_question = None
@@ -1121,7 +1252,12 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                     try:
                         recipes = _json.loads(tool_result)
                         if isinstance(recipes, list) and recipes:
-                            recommendations = recipes
+                            # 合并到结果池，避免后一次 search 覆盖前一次的相关结果
+                            for _r in recipes:
+                                _n = _r.get('name', '')
+                                if _n and _n not in rec_pool:
+                                    rec_pool[_n] = _r
+                            recommendations = list(rec_pool.values())
                     except _json.JSONDecodeError:
                         pass
                 elif tool_name == "ask_user":
@@ -1148,6 +1284,35 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
 
     print(f"[Agent] 循环结束: recs={len(recommendations)}, has_response={bool(response_text)}, "
           f"tool_count={tool_count}, llm_ms={llm_ms_total:.0f}")
+
+    # — 结果池清洗：补全完整菜谱 + 按核心查询相关度重排裁剪 —
+    # 多轮搜索会把不相关菜品（如为凑"烹饪方式多样"搜出的蒸菜）混入结果池，
+    # 导致"想吃辣"却混入一堆蒸菜。此处先补全完整菜谱字段（供叙述/营养计算），
+    # 再按用户核心查询相关度重排并裁剪到5道，保证最终推荐与需求一致。
+    if recommendations:
+        try:
+            core_q, _ = _clean_search_query(user_message)
+            # 1) 补全完整菜谱数据
+            enriched = []
+            for r in recommendations:
+                rname = r.get('name', '')
+                if rname:
+                    full = retriever.get_recipe_by_name(rname)
+                    enriched.append(full if full else r)
+                else:
+                    enriched.append(r)
+            # 2) 按核心查询相关度重排并裁剪/补足（带上排除过滤，避免补入被忌口的食材）
+            trim_filters = dict(dm.get_search_filters()) if dm else {}
+            _, neg_ex = _clean_search_query(user_message)
+            if neg_ex:
+                trim_filters['exclude_ingredients'] = list(set(
+                    trim_filters.get('exclude_ingredients', []) + neg_ex))
+            recommendations = _trim_by_relevance(enriched, core_q, retriever, max_n=5,
+                                                 filters=trim_filters)
+            print(f"[Agent] 结果池清洗后: {len(recommendations)}道 -> "
+                  f"{[r.get('name') for r in recommendations]}")
+        except Exception as e:
+            print(f"[Agent] 结果池清洗失败: {e}")
 
     # — 保底补齐：推荐数量不足时直接搜索补充 —
     if len(recommendations) < 3 and len(recommendations) > 0:
@@ -1236,6 +1401,20 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
         if recommendations:
             recipe_names = [r['name'] for r in recommendations]
             dm.add_recommended_recipes(recipe_names)
+
+    # — 叙述与列表一致性兜底 —
+    # Agent 可能综合多次搜索结果或编造列表外的菜名（如"鱼香茄子"），导致叙述与结构化列表脱节。
+    # 从菜谱库中提取叙述实际引用的菜名：只要叙述引用了列表外的菜名，就重建确定性叙述，保证完全一致。
+    if recommendations and response_text and not ask_question:
+        rec_names = [r.get('name', '') for r in recommendations if r.get('name')]
+        rec_set = set(rec_names)
+        library_names = [r.get('name', '') for r in retriever.recipes if r.get('name')]
+        # 提取叙述中引用的菜名（在菜谱库内匹配，避免把描述文本误判为菜名）
+        cited = [n for n in library_names if len(n) >= 2 and n in response_text]
+        cited_outside = [n for n in cited if n not in rec_set]
+        if cited_outside:
+            print(f"[Agent] 叙述引用了列表外菜名: {cited_outside[:5]}，改用确定性叙述")
+            response_text = _build_consistent_response(recommendations)
 
     return {
         'recommendations': recommendations,
@@ -1334,6 +1513,9 @@ def dialog():
         dm.add_message('user', message)
         
         # 合并意图识别+偏好提取（一次LLM调用，节省一轮延迟）
+        # 先跑关键词提取作为基线（可靠覆盖"刺激/过瘾/不吃X"等明确表达），
+        # 再由 LLM 覆盖/补充，避免 LLM 漏提口味字段导致"想吃刺激的"丢失辣味偏好
+        kw_preferences = dm.extract_preferences(message)  # 关键词基线（内部会写入）
         llm_result = dm.detect_with_llm(message, llm_client=llm)
         if llm_result:
             intent = llm_result.get('intent', 'recommend')
@@ -1343,10 +1525,10 @@ def dialog():
                 dm._update_preferences(llm_result['preferences'])
                 preferences = llm_result['preferences']
             else:
-                preferences = dm.extract_preferences(message)  # 关键词回退（内部会写入）
+                preferences = kw_preferences
         else:
             intent = dm.detect_intent(message)  # 关键词回退
-            preferences = dm.extract_preferences(message)  # 关键词回退（内部会写入）
+            preferences = kw_preferences
         
         # 兜底1：强制关键词提取排除食材，保证"不吃X"始终进入 excluded_ingredients
         if not dm.user_preferences.get('excluded_ingredients'):
@@ -1369,6 +1551,15 @@ def dialog():
             'ask_clarification': 'clarify',
         }
         intent = INTENT_ALIASES.get(intent, intent)
+
+        # 反问句强制覆盖（双保险）：如"这不是有辣的吗""不就有辣的吗"是用户对当前
+        # 推荐的肯定性反问，绝不能被 LLM/关键词误判为否定推荐。已有推荐时统一走 confirm。
+        if (re.search(r'不是(?:就有|就|有)?[^，。！!？?]{1,8}吗|不就有[^，。！!？?]{1,8}吗', message)
+                and dm.recommended_recipes
+                and intent in ('reject_recommendation', 'set_preferences', 'add_constraint',
+                               'recommend', 'vague_query', 'request_substitute')):
+            print(f"[dialog] 反问句确认: '{message}' -> confirm（保留当前推荐）")
+            intent = 'confirm'
         
         # 根据意图生成响应
         response_text = ""
@@ -1582,17 +1773,22 @@ def dialog():
         
         elif intent == 'confirm':
             dm.set_dialog_state('completed')
-            # 营养总结 + 烹饪小贴士
-            parts = ["好的，已确认推荐～"]
+            # 反问句确认（如"这不是有辣的吗"）用自然回应，普通确认用固定文案
+            is_rhetorical = bool(re.search(
+                r'不是(?:就有|就|有)?[^，。！!？?]{1,8}吗|不就有[^，。！!？?]{1,8}吗', message))
+            if is_rhetorical and dm.recommended_recipes:
+                parts = ["对呀，这几道菜里确实有辣的，刚那轮没搜全～现在给你配的这些够味：",
+                         "、".join(dm.recommended_recipes[-5:])]
+            else:
+                parts = ["好的，已确认推荐～"]
             if dm.recommended_recipes:
-                # 按人营养摄入
-                nutri = compute_meal_nutrition_summary(
-                    dm.recommended_recipes[-8:],
-                    user_ids=user_ids if user_ids else ([user_id] if user_id else None)
-                )
-                if nutri:
-                    parts.append(nutri)
-                # 烹饪建议
+                # 回填当前推荐，供前端展示卡片
+                recommendations = []
+                for _name in dm.recommended_recipes[-5:]:
+                    _rec = retriever.get_recipe_by_name(_name)
+                    if _rec:
+                        recommendations.append(_rec)
+                # 烹饪建议（营养概览由对话末尾的统一代码基于最终列表追加，避免重复展示）
                 total_time = sum(
                     (retriever.get_recipe_by_name(r) or {}).get('cooking_time', 0)
                     for r in dm.recommended_recipes[-8:]
@@ -1626,17 +1822,6 @@ def dialog():
         # 添加系统回复到对话历史
         dm.add_message('system', response_text)
         
-        # ── 按人营养摄入概览 ──
-        nutrition_summary = ""
-        recipe_names = [r['name'] for r in recommendations] if recommendations else []
-        if recipe_names and not agent_result.get('ask_question'):
-            nutrition_summary = compute_meal_nutrition_summary(
-                recipe_names,
-                user_ids=user_ids if user_ids else ([user_id] if user_id else None)
-            )
-            if nutrition_summary:
-                response_text += "\n" + nutrition_summary
-
         # ── 结果验证（拦截违规菜品）──
         t_verify_start = time.perf_counter()
         if recommendations:
@@ -1674,7 +1859,13 @@ def dialog():
                         violation_recipes.add(m)
                 # 移除违规/幻觉菜品
                 if violation_recipes:
+                    _before_names = set(r.get('name', '') for r in recommendations)
                     recommendations = [r for r in recommendations if r.get('name', '') not in violation_recipes]
+                    # 若删除了菜品，重建叙述使其与最终列表一致（营养概览在下方基于最终列表统一重算）
+                    if recommendations and len(recommendations) != len(_before_names):
+                        rebuilt = _build_consistent_response(recommendations)
+                        if rebuilt:
+                            response_text = rebuilt
                     if not recommendations:
                         # 全部被拦截：尝试现场生成一道合规新菜谱（赛题加分项）
                         gen = _generate_fallback_recipe(
@@ -1684,8 +1875,10 @@ def dialog():
                         if gen:
                             recommendations = [gen]
                             ings = '、'.join(gen['ingredients'])
-                            response_text += (
-                                f"\n\n为符合您的健康约束，我现场设计了一道新菜——"
+                            # 原推荐全部被拦截：重建回复只保留合规的生成菜（避免残留被拦截菜名）
+                            response_text = (
+                                f"刚才推荐的那几道里，有几道和你的健康约束冲突，我重新把关后，"
+                                f"为你现场设计了一道完全合规的新菜——"
                                 f"【{gen['name']}】（建议菜谱·生成）\n"
                                 f"食材：{ings}\n"
                                 f"做法：{gen['steps']}"
@@ -1694,6 +1887,17 @@ def dialog():
                             response_text += ("\n\n很抱歉，当前推荐未通过安全检测，已为您重新筛选。"
                                               "请告诉我更多偏好，帮您找到合适的菜品～")
         t_verify_dialog = round((time.perf_counter() - t_verify_start) * 1000, 2)
+
+        # ── 按人营养摄入概览（基于验证后的最终列表，与叙述/列表完全一致）──
+        nutrition_summary = ""
+        recipe_names = [r['name'] for r in recommendations] if recommendations else []
+        if recipe_names and not agent_result.get('ask_question'):
+            nutrition_summary = compute_meal_nutrition_summary(
+                recipe_names,
+                user_ids=user_ids if user_ids else ([user_id] if user_id else None)
+            )
+            if nutrition_summary:
+                response_text += "\n" + nutrition_summary
         
         t_total = round((time.perf_counter() - t_request_start) * 1000, 2)
         timing_data = {
@@ -2079,6 +2283,38 @@ def get_recipe_detail(name: str):
 
 # ─── 按人营养摄入计算 ────────────────────────────────────
 
+_ING_QTY_RE = re.compile(r'([\d.]+)\s*(克|g|G|kg|千克|毫升|ml|ML)\b')
+
+
+def _ing_qty_grams(text: str, key: str) -> Optional[float]:
+    """
+    提取食材 key 在配料文本中对应的用量（克）。
+
+    营养库按每100g提供数据，需按实际克数缩放，避免人均营养虚高。
+    仅在文本中存在明确克数时返回数值；否则返回 None（如"芝麻油适量""鸡蛋3个"），
+    调用方应跳过该匹配，避免把高热量调料按100g默认值虚算进去。
+    """
+    start = 0
+    while True:
+        idx = text.find(key, start)
+        if idx < 0:
+            return None
+        seg = text[idx:idx + 25]  # key 后 25 字符内应含用量
+        m = _ING_QTY_RE.search(seg)
+        if m:
+            try:
+                q = float(m.group(1))
+                unit = m.group(2).lower()
+                if unit in ('kg', '千克'):
+                    q *= 1000
+                return q if q > 0 else None
+            except ValueError:
+                return None
+        start = idx + len(key)
+        if start >= len(text):
+            return None
+
+
 def compute_meal_nutrition_summary(recipe_names: list, user_ids: list = None,
                                    recommend_count: int = None) -> str:
     """
@@ -2105,16 +2341,61 @@ def compute_meal_nutrition_summary(recipe_names: list, user_ids: list = None,
     num_people = len(user_ids) if user_ids else (recommend_count or 1)
     num_people = max(num_people, 1)
     
-    # 计算总营养
+    # 计算总营养（仅统计有明确克数的食材，按克数缩放，避免调料/无克数条目虚高）
     total = {'热量': 0, '蛋白质': 0, '脂肪': 0, '碳水': 0}
     for recipe in recipes:
-        ingredients = recipe.get('ingredients', '')
-        for ing, data in MEAL_NUTRITION_DB.items():
-            if ing in ingredients:
-                total['热量'] += data.get('热量', 0)
-                total['蛋白质'] += data.get('蛋白质', 0)
-                total['脂肪'] += data.get('脂肪', 0)
-                total['碳水'] += data.get('碳水', 0)
+        ing = recipe.get('ingredients', '')
+        text = ' '.join(str(i) for i in ing) if isinstance(ing, list) else str(ing or '')
+        matched_any = False
+        counted_spans = []  # 已统计的 (start, end)，避免"芝麻"落在"芝麻油"内被双计
+        # 长 key 优先，短 key 若整体被更长的已匹配 key 覆盖则跳过
+        for ing_key in sorted(MEAL_NUTRITION_DB.keys(), key=lambda k: len(k), reverse=True):
+            if not ing_key:
+                continue
+            data = MEAL_NUTRITION_DB.get(ing_key, {})
+            pos = 0
+            while True:
+                idx = text.find(ing_key, pos)
+                if idx < 0:
+                    break
+                end = idx + len(ing_key)
+                # 若该位置已被更长的 key 覆盖，跳过（如"芝麻"被"芝麻油"覆盖）
+                if any(idx < e and end > s for s, e in counted_spans):
+                    pos = idx + 1
+                    continue
+                qty = _ing_qty_grams(text, ing_key)
+                if qty is not None:
+                    matched_any = True
+                    counted_spans.append((idx, end))
+                    _scale = qty / 100.0
+                    total['热量'] += data.get('热量', 0) * _scale
+                    total['蛋白质'] += data.get('蛋白质', 0) * _scale
+                    total['脂肪'] += data.get('脂肪', 0) * _scale
+                    total['碳水'] += data.get('碳水', 0) * _scale
+                    break
+                pos = idx + 1
+        # 占位食材（如"主料：紫苏辣子鸡400克"）无明细匹配时，用菜名关键词兜底估算，
+        # 避免营养概览全部显示 0 千卡
+        if not matched_any:
+            name = recipe.get('name', '')
+            _name_kw = [
+                ('鸡', '鸡肉'), ('鸭', '鸭肉'), ('鹅', '鹅肉'), ('牛', '牛肉'),
+                ('猪', '猪肉'), ('羊', '羊肉'), ('鱼', '鱼肉'), ('虾', '虾'),
+                ('蟹', '螃蟹'), ('蛋', '鸡蛋'), ('排骨', '排骨'), ('豆腐', '豆腐'),
+                ('茄', '茄子'), ('萝卜', '萝卜'), ('土豆', '土豆'), ('冬瓜', '冬瓜'),
+                ('南瓜', '南瓜'), ('白菜', '白菜'), ('菠菜', '菠菜'), ('芹菜', '芹菜'),
+                ('黄瓜', '黄瓜'), ('香菇', '香菇'), ('木耳', '木耳'), ('玉米', '玉米'),
+                ('饭', '米饭'), ('面', '面条'), ('汤', '蔬菜'), ('菜', '蔬菜'),
+            ]
+            hit = set()
+            for kw, db_key in _name_kw:
+                if kw in name and db_key not in hit:
+                    hit.add(db_key)
+                    data = MEAL_NUTRITION_DB.get(db_key, {})
+                    total['热量'] += data.get('热量', 0)
+                    total['蛋白质'] += data.get('蛋白质', 0)
+                    total['脂肪'] += data.get('脂肪', 0)
+                    total['碳水'] += data.get('碳水', 0)
     
     per_kcal = total['热量'] / num_people
     per_protein = total['蛋白质'] / num_people

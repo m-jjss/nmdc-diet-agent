@@ -178,6 +178,14 @@ class DialogManager:
                     extracted['preferences']['low_spicy'] = True
                     break
         
+        # 正向辣味需求：说"刺激/过瘾/重口/想吃辣"是想要辣（而非不要辣）
+        spicy_want_keywords = ['刺激', '过瘾', '重口味', '重口', '口味重', '想吃辣', '来点辣', '要辣',
+                               '够味', '带劲', '下饭']
+        if any(k in message_lower for k in spicy_want_keywords):
+            if not re.search(r'(不要|不吃|别|不想要|不想吃).*(辣|刺激|重口|过瘾)', message_lower):
+                extracted['preferences']['low_spicy'] = False
+                extracted['preferences']['spicy'] = True
+        
         # 识别膳食目标
         goal_keywords = {
             '减肥': ['减肥', '减脂', '瘦身', '减重'],
@@ -252,9 +260,9 @@ class DialogManager:
             '江浙菜': ['江浙', '本帮', '上海菜'],
             '家常菜': ['家常', '家里做', '家常便饭']
         }
-        # 单独处理"辣"：只有明确想要辣(而非不要辣)时才匹配川菜
-        if '辣' in message_lower:
-            if not re.search(r'(不要|不吃|别|不想要|不想吃).*辣', message_lower):
+        # 单独处理"辣/刺激/重口"：只有明确想要辣(而非不要辣)时才匹配川菜
+        if any(k in message_lower for k in ['辣', '刺激', '过瘾', '重口', '重口味', '口味重']):
+            if not re.search(r'(不要|不吃|别|不想要|不想吃).*(辣|刺激|重口|过瘾)', message_lower):
                 extracted['cuisine_preference'] = '川菜'
         
         # 更新用户偏好
@@ -337,6 +345,13 @@ class DialogManager:
             识别出的意图类型
         """
         message_lower = user_message.lower()
+        
+        # 反问句确认识别（优先级最高）：如"这不是有辣的吗""不就有辣的吗"
+        # 是用户对当前推荐的肯定性反问，不是否定。已有推荐时视为 confirm。
+        if self.recommended_recipes and re.search(
+                r'不是(?:就有|就|有)?[^，。！!？?]{1,8}吗|不就有[^，。！!？?]{1,8}吗',
+                message_lower):
+            return 'confirm'
         
         # 意图关键词映射（按优先级排序）
         intent_keywords = {
@@ -615,6 +630,19 @@ class DialogManager:
             filters['low_sugar'] = True
         if prefs.get('vegetarian'):
             filters['vegetarian'] = True
+        
+        # 健康目标 → 热量/脂肪/糖分限制
+        # 如"减肥""减脂"应返回低卡低脂菜品，而不是红烧/油炸/高糖菜
+        goals = self.user_preferences.get('dietary_goals', [])
+        for goal in goals:
+            if any(k in goal for k in ['减肥', '减脂', '瘦身', '低卡', '减重']):
+                filters['low_fat'] = True
+                if 'max_calories' not in filters or filters['max_calories'] > 600:
+                    filters['max_calories'] = 600
+            if any(k in goal for k in ['控糖', '降糖', '无糖', '低糖']):
+                filters['low_sugar'] = True
+            if any(k in goal for k in ['增肌', '高蛋白']):
+                filters['high_protein'] = True
         
         # 烹饪时间限制
         if self.user_preferences.get('cooking_time_limit'):
@@ -1017,6 +1045,12 @@ class DialogManager:
 - vague_query: 模糊查询（如"随便"）
 - clarify: 用户消息信息不足，需要反问
 
+<反问句规则>
+重要：形如"这不是有辣的吗""不就有辣的吗""不是有清淡的吗"的反问句
+（"不是/不就 + 有 + 名词 + 吗"），是用户在肯定/确认当前推荐里确实有某类菜，
+意图必须判为 confirm，绝对不能判为 reject_recommendation 或 set_preferences。
+含"不是"不等于否定推荐。
+
 <偏好提取>
 从消息中提取用户偏好：
 - allergies: 过敏原列表
@@ -1028,6 +1062,7 @@ class DialogManager:
 - cuisine_preference: 菜系偏好或null
 - difficulty: 难度或null
 - low_spicy: true/false
+- spicy: true/false（想吃辣/刺激/重口/过瘾为true；明确不吃辣为false）
 - low_fat: true/false
 - low_sugar: true/false
 - vegetarian: true/false

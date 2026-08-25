@@ -217,11 +217,11 @@ class AutoScorer:
             t_total = (time.perf_counter() - t0) * 1000
             data = resp.json() if resp.status_code == 200 else {}
             data['_t_total'] = t_total
-            # 提取服务端返回的首Token延迟
+            # 提取服务端返回的首Token延迟（兼容 t_first_token_ms / first_token_ms 两种键名）
             timing = data.get('timing', {})
-            data['_first_token_ms'] = timing.get('first_token_ms', 0)
+            ft = timing.get('t_first_token_ms') or timing.get('first_token_ms') or 0
+            data['_first_token_ms'] = ft
             self.timings.append(t_total)
-            ft = timing.get('first_token_ms', 0)
             if ft:
                 self.first_tokens.append(ft)
             return data
@@ -309,8 +309,8 @@ class AutoScorer:
                 if not rname:
                     continue
 
-                # 幻觉检测
-                if rname not in ALL_RECIPES:
+                # 幻觉检测（generated 标记为现场生成，赛题允许，豁免）
+                if rname not in ALL_RECIPES and not r.get('generated'):
                     penalty_items.append(f"幻觉: {rname}")
                     self.hallucination_total += 1
                     continue  # 幻觉菜品无法进一步做约束检查
@@ -400,11 +400,11 @@ class AutoScorer:
                 print(f"    - 无推荐 | 0分 | {t_ms:.0f}ms")
                 continue
 
-            # — 幻觉检测 —
+            # — 幻觉检测（generated 标记为现场生成，赛题允许，豁免）—
             with_names = []
             for r in recs:
                 rname = r.get('name', '')
-                if rname and rname in ALL_RECIPES:
+                if rname and (rname in ALL_RECIPES or r.get('generated')):
                     with_names.append(rname)
                 elif rname:
                     deductions += 1
@@ -832,11 +832,11 @@ class AutoScorer:
                     empty_responses += 1
                     case_ok = False
 
-                # 幻觉检测
+                # 幻觉检测（generated 标记的菜为现场生成，赛题允许，豁免库内存在性检查）
                 hinfo = ""
                 if recs:
                     fake = [r['name'] for r in recs
-                            if r.get('name') and r['name'] not in ALL_RECIPES]
+                            if r.get('name') and r['name'] not in ALL_RECIPES and not r.get('generated')]
                     if fake:
                         hinfo = f" [幻觉:{len(fake)}]"
                         case_hallucinations += len(fake)

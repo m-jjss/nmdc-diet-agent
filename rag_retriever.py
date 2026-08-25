@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import hashlib
 from typing import List, Dict, Optional
 
@@ -47,16 +48,85 @@ class RAGRetriever:
         self.vector_cache = {}  # 向量缓存，格式: {hash_key: vector}
         self._load_data()
     
+    # 非菜品条目：方太料理机的功能操作/预处理指令，不是一道菜，检索时必须排除
+    NON_DISH_NAMES = {
+        '68℃慢煮', '59℃慢煮', '高温快煮', '停刀烧煮', '蛋白打发',
+        '奶油打发', '绞肉', '果蔬清洗', '酸奶发酵', '乳化', '颠勺',
+    }
+
+    def _is_non_dish(self, recipe: Dict) -> bool:
+        """
+        判断条目是否为非菜品（料理机操作/预处理指令）
+        
+        判定依据：
+        1. 名称命中已知功能操作黑名单（如"68℃慢煮""奶油打发"）
+        2. 配料以"主料：自定义"开头（无具体食材，只是料理机程序占位）
+        
+        Args:
+            recipe: 菜谱条目
+            
+        Returns:
+            True: 是非菜品条目，应过滤
+        """
+        name = str(recipe.get('name', '')).strip()
+        if name in self.NON_DISH_NAMES:
+            return True
+        ingredients = str(recipe.get('ingredients', ''))
+        if ingredients.startswith('主料：自定义'):
+            return True
+        return False
+
+    def _safe_ingredients(self, recipe: Dict) -> List[str]:
+        """
+        解析菜谱食材为食材名列表，用于匹配/过滤。
+        兼容 ingredients 为字符串（"主料：梨肉1000g；红枣肉20g"）或列表两种格式。
+        注意：只用于检索匹配，不修改 recipe 数据（营养计算依赖原始字符串中的克数）。
+
+        Args:
+            recipe: 菜谱条目
+
+        Returns:
+            食材名列表（小写）
+        """
+        ings = recipe.get('ingredients', [])
+        if isinstance(ings, list):
+            return [str(i).lower() for i in ings if str(i).strip()]
+        if isinstance(ings, str):
+            ingredient_list = []
+            for part in ings.split('；'):
+                part = part.strip()
+                if '：' in part:
+                    part = part.split('：', 1)[1].strip()
+                if not part:
+                    continue
+                # 去数字单位
+                text = re.sub(r'\d+(\.\d+)?\s*[g克ml毫升l升kg千克]', '', part)
+                # 按常见分隔符切分
+                for sep in ['，', ',', '、', ';']:
+                    text = text.replace(sep, '，')
+                for sub in text.split('，'):
+                    sub = sub.strip()
+                    if sub:
+                        ingredient_list.append(sub.lower())
+            return ingredient_list
+        return []
+
     def _load_data(self):
         """
         加载菜谱数据和营养数据库
         
         从配置的JSON文件路径加载数据，失败时返回空数据结构。
+        加载时过滤掉非菜品条目（料理机操作/预处理指令），保证检索结果只含真实菜品。
         """
         # 加载菜谱数据
         try:
             with open(Config.RECIPES_JSON_PATH, 'r', encoding='utf-8') as f:
-                self.recipes = json.load(f)
+                all_recipes = json.load(f)
+            # 过滤非菜品条目（料理机操作类数据）
+            self.recipes = [r for r in all_recipes if not self._is_non_dish(r)]
+            filtered_count = len(all_recipes) - len(self.recipes)
+            if filtered_count:
+                print(f"已过滤 {filtered_count} 条非菜品条目（料理机操作/预处理）")
             print(f"成功加载 {len(self.recipes)} 条菜谱")
         except Exception as e:
             print(f"加载菜谱数据失败: {e}")
@@ -138,7 +208,7 @@ class RAGRetriever:
             
             for recipe in self.recipes:
                 # 构建菜谱文本描述
-                text = f"{recipe.get('name', '')} {recipe.get('description', '')} {' '.join(recipe.get('ingredients', []))}"
+                text = f"{recipe.get('name', '')} {recipe.get('description', '')} {' '.join(self._safe_ingredients(recipe))}"
                 
                 # 向量化并添加到列表
                 vector = self._text_to_vector(text)
@@ -263,8 +333,8 @@ class RAGRetriever:
         # 将查询文本转换为向量
         query_vector = np.array([self._text_to_vector(query)], dtype=np.float32)
         
-        # 使用FAISS进行向量检索
-        distances, indices = self.index.search(query_vector, min(top_k, len(self.recipe_index_map)))
+        # 使用FAISS进行向量检索（扩大召回，给关键词匹配留出合并空间）
+        distances, indices = self.index.search(query_vector, min(top_k * 3, len(self.recipe_index_map)))
         
         # 获取检索结果
         results = []
@@ -281,7 +351,111 @@ class RAGRetriever:
         # 重新排序（综合相似度和关键词匹配度）
         results = self._rerank(results, query)
         
-        return results[:top_k]
+        # 关键词精确匹配候选：hash向量语义不可靠时，确保真正相关的菜优先进来
+        # （"虾"必须优先出虾的菜，而不是靠FAISS近邻随机凑数）
+        kw_results = self._simple_search(query, top_k=top_k * 2, filters=filters)
+
+        # 合并策略：
+        # 1) 关键词命中优先（相关性最强）
+        # 2) 数量不足时，用规则化兜底挑选（荤素搭配+烹饪多样+偏好过滤）补足，
+        #    而不是用哈希近邻随机凑数——哈希向量无语义，"今晚吃什么"会随机返回无关菜
+        # 3) 仅当规则化兜底仍不足时才退化到FAISS近邻
+        merged, seen = [], set()
+        for r in kw_results:
+            name = r.get('name', '')
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            merged.append(r)
+            if len(merged) >= top_k:
+                return merged
+
+        if len(merged) < top_k:
+            for r in self._fallback_selection(filters, top_k):
+                name = r.get('name', '')
+                if name and name not in seen:
+                    seen.add(name)
+                    merged.append(r)
+                if len(merged) >= top_k:
+                    break
+
+        if len(merged) < top_k:
+            for r in results:
+                name = r.get('name', '')
+                if name and name not in seen:
+                    seen.add(name)
+                    merged.append(r)
+                if len(merged) >= top_k:
+                    break
+
+        return merged
+
+    def _fallback_selection(self, filters: Optional[Dict] = None, top_k: int = 5) -> List[Dict]:
+        """
+        模糊查询兜底：当关键词/语义检索均无法给出相关结果（如"今晚吃什么""随便推荐"）时，
+        从全库按规则挑选一餐：荤素搭配 + 烹饪方式多样 + 遵循用户偏好过滤。
+
+        Args:
+            filters: 检索过滤条件
+            top_k: 返回数量
+
+        Returns:
+            规则化挑选的菜谱列表
+        """
+        pool = self._apply_filters(self.recipes, filters or {})
+        if not pool:
+            pool = self.recipes
+
+        meat_kws = ['肉', '鸡', '鸭', '鱼', '虾', '蟹', '贝', '牛', '猪', '羊', '排骨',
+                    '腊', '肠', '腿', '翅', '肝', '鲍', '参', '蛤', '鱿', '鳗', '蚝']
+        meat_dishes = [r for r in pool
+                       if any(k in str(r.get('name', '')) + ' '.join(self._safe_ingredients(r))
+                              for k in meat_kws)]
+        veg_dishes = [r for r in pool if r not in meat_dishes]
+
+        methods = ['蒸', '炒', '煮', '炖', '烤', '凉拌', '煎', '煲', '烧', '焖', '炸']
+        used_names = set()
+        result = []
+
+        def _pick(source):
+            # 优先挑选不同烹饪方式的主料菜
+            for m in methods:
+                for r in source:
+                    if r.get('name') in used_names:
+                        continue
+                    if self._get_cooking_method(r) == m:
+                        used_names.add(r.get('name'))
+                        return r
+            for r in source:
+                if r.get('name') not in used_names:
+                    used_names.add(r.get('name'))
+                    return r
+            return None
+
+        # 荤素交替选择，保证一餐搭配均衡
+        sources = [meat_dishes, veg_dishes]
+        idx = 0
+        for _ in range(top_k):
+            src = sources[idx % 2]
+            idx += 1
+            if not src:
+                src = sources[(idx) % 2]
+            chosen = _pick(src) if src else None
+            if chosen:
+                result.append(chosen)
+            else:
+                break
+
+        # 仍不足时从全部池补充
+        if len(result) < top_k:
+            for r in pool:
+                if r.get('name') and r.get('name') not in used_names:
+                    result.append(r)
+                    used_names.add(r.get('name'))
+                if len(result) >= top_k:
+                    break
+
+        return result[:top_k]
     
     def _simple_search(self, query: str, top_k: int = 10, filters: Optional[Dict] = None) -> List[Dict]:
         """
@@ -330,29 +504,34 @@ class RAGRetriever:
             匹配度得分(0~1)
         """
         score = 0
-        query_lower = query.lower()
-        
-        # 菜名匹配（权重最高）
-        name = recipe.get('name', '').lower()
-        if query_lower in name:
-            score += 0.5
-        
-        # 食材匹配
-        ingredients = ' '.join([i.lower() for i in recipe.get('ingredients', [])])
-        for word in query_lower.split():
-            if word in ingredients:
-                score += 0.1
-        
-        # 描述匹配
-        description = recipe.get('description', '').lower()
-        if query_lower in description:
-            score += 0.2
-        
-        # 标签匹配
-        tags = ' '.join([t.lower() for t in recipe.get('tags', [])])
-        if query_lower in tags:
-            score += 0.2
-        
+        # 查询按空格拆分（如"辣 麻辣 香辣 辣椒 剁椒 川菜 湘菜 辛辣"），任一词命中即计分
+        query_tokens = [t for t in query.lower().split() if t] or [query.lower()]
+
+        name = str(recipe.get('name', '')).lower()
+        ingredients = ' '.join(self._safe_ingredients(recipe))
+        description = str(recipe.get('description', '')).lower()
+        tags = ' '.join(str(t).lower() for t in recipe.get('tags', []))
+        label = str(recipe.get('label', '')).lower()
+
+        for token in query_tokens:
+            token = token.strip()
+            if not token:
+                continue
+            t_score = 0
+            # 菜名匹配（权重最高）
+            if token in name:
+                t_score += 0.5
+            # 食材匹配
+            if token in ingredients:
+                t_score += 0.1
+            # 描述匹配
+            if token in description:
+                t_score += 0.2
+            # 标签匹配
+            if token in tags or token in label:
+                t_score += 0.2
+            score = max(score, t_score)
+
         return min(score, 1.0)
     
     def _apply_filters(self, recipes: List[Dict], filters: Dict) -> List[Dict]:
@@ -384,7 +563,20 @@ class RAGRetriever:
         # 排除指定食材（在菜名、食材、描述、做法中做子串检查）
         exclude_ingredients = filters.get('exclude_ingredients', [])
         if exclude_ingredients:
+            # 类别词展开：如"海鲜"要能排除鱼虾蟹贝等具体菜品，而不是只匹配字面"海鲜"
+            category_expansion = {
+                '海鲜': ['海鲜', '鱼', '虾', '蟹', '贝', '蚝', '蛤', '鱿', '鳗', '鲍', '牡蛎', '海参', '海带', '紫菜', '鱼片', '鱼柳', '鱼头', '鱼丸', '鱼蛋', '虾仁', '虾滑', '虾米', '蟹肉', '蟹黄', '带子', '扇贝', '蛏子', '花甲', '蛤蜊', '三文鱼', '鳕鱼', '鲈鱼', '黄鱼', '鲳鱼', '银鱼', '带鱼'],
+                '鱼': ['鱼', '鱼片', '鱼柳', '鱼块', '鱼头', '鱼丸', '鱼蛋', '三文鱼', '鳕鱼', '鲈鱼', '黄鱼', '鲳鱼', '鲷鱼', '带鱼', '银鱼', '罗非鱼', '龙利鱼', '巴沙鱼', '金枪鱼'],
+                '虾': ['虾', '虾仁', '虾滑', '虾米', '明虾', '基围虾', '小龙虾'],
+                '蟹': ['蟹', '蟹肉', '蟹黄', '蟹柳', '大闸蟹'],
+                '贝': ['贝', '蛤蜊', '扇贝', '带子', '蛏子', '花甲', '青口', '牡蛎', '生蚝', '鲍鱼'],
+            }
             exclude_set = [str(i).lower() for i in exclude_ingredients]
+            expanded = []
+            for ex in exclude_set:
+                expanded.append(ex)
+                expanded.extend(category_expansion.get(ex, []))
+            exclude_set = list(dict.fromkeys(expanded))  # 去重保序
 
             def _excluded(r):
                 name_l = str(r.get('name', '')).lower()
@@ -432,13 +624,19 @@ class RAGRetriever:
         
         # 口味偏好过滤
         if filters.get('low_fat'):
-            high_fat_methods = ['油炸', '油煎', '红烧', '油焖', '爆炒']
+            high_fat_methods = ['油炸', '油煎', '红烧', '油焖', '爆炒', '干煸', '回锅']
+            # 高脂食材（含腊味/肥肉/油炸类），清淡/低脂/减肥时排除
+            high_fat_ings = ['五花肉', '肥肉', '肥牛', '猪油', '黄油', '奶油', '培根',
+                             '腊肉', '腊肠', '肥肠', '猪蹄', '蹄髈', '羊油', '牛油', '酥肉']
             filtered = [
                 r for r in filtered
                 if not any(m in str(r.get('description', '')).lower() or
                           m in str(r.get('method', '')).lower() or
-                          m in ' '.join(r.get('tags', [])).lower()
+                          m in ' '.join(str(t) for t in r.get('tags', [])).lower()
                           for m in high_fat_methods)
+                and not any(f in ' '.join(self._safe_ingredients(r)) or
+                            f in str(r.get('name', '')).lower()
+                            for f in high_fat_ings)
             ]
         
         if filters.get('low_spicy'):
@@ -447,8 +645,8 @@ class RAGRetriever:
                 r for r in filtered
                 if not any(s in str(r.get('description', '')).lower() or
                           s in str(r.get('method', '')).lower() or
-                          s in ' '.join(r.get('tags', [])).lower() or
-                          s in ' '.join([str(i).lower() for i in r.get('ingredients', [])])
+                          s in ' '.join(str(t) for t in r.get('tags', [])).lower() or
+                          s in ' '.join(self._safe_ingredients(r))
                           for s in spicy_keywords)
             ]
         
@@ -464,8 +662,19 @@ class RAGRetriever:
             meat_keywords = ['猪肉', '牛肉', '羊肉', '鸡肉', '鸭肉', '鱼肉', '虾', '蟹', '海鲜']
             filtered = [
                 r for r in filtered
-                if not any(m in ' '.join([str(i).lower() for i in r.get('ingredients', [])])
+                if not any(m in ' '.join(self._safe_ingredients(r))
                           for m in meat_keywords)
+            ]
+        
+        # 高蛋白目标：只保留含优质蛋白食材的菜品
+        if filters.get('high_protein'):
+            protein_kws = ['鸡胸', '鸡', '牛肉', '牛', '鱼', '虾', '蟹', '蛋', '瘦肉',
+                           '三文鱼', '鳕鱼', '鲈鱼', '豆腐', '豆', '虾仁', '龙利鱼']
+            filtered = [
+                r for r in filtered
+                if any(p in ' '.join(self._safe_ingredients(r)) or
+                       p in str(r.get('name', ''))
+                       for p in protein_kws)
             ]
         
         return filtered
@@ -517,7 +726,7 @@ class RAGRetriever:
         """
         total_calories = 0
         
-        for ingredient in recipe.get('ingredients', []):
+        for ingredient in self._safe_ingredients(recipe):
             # 在营养数据库中查找食材热量
             if ingredient in self.nutrition_db:
                 total_calories += self.nutrition_db[ingredient].get('calories', 0)
@@ -571,7 +780,7 @@ class RAGRetriever:
             # 餐次感知加权
             if is_meal_query:
                 name = str(recipe.get('name', ''))
-                ings = str(recipe.get('ingredients', ''))
+                ings = ' '.join(self._safe_ingredients(recipe))
                 tags = [str(t) for t in recipe.get('tags', [])]
                 
                 # 正餐（午餐/晚餐）降权甜点、零食、饼干
