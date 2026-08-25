@@ -18,126 +18,152 @@ API_BASE = "http://127.0.0.1:5000"
 # ============================================================
 
 CUSTOM_CSS = """
-/* 全局 */
-footer { display: none !important; }
-.gradio-container { max-width: 100% !important; }
-
-/* 左侧边栏 - 浅色 */
-.sidebar-col {
+/* ============ Codex 白色风格主题 ============ */
+html, body {
     background: #fafafa !important;
-    border-right: 1px solid #e8e8e8 !important;
-    padding: 20px 16px !important;
+    color: #1a1a1a !important;
+}
+:root {
+    --body-background-fill: #fafafa !important;
+    --body-text-color: #1a1a1a !important;
+    --body-subtext-color: #6b7280 !important;
+    --block-background-fill: #ffffff !important;
+    --block-border-color: #e5e7eb !important;
+    --block-border-width: 1px !important;
+    --block-shadow: 0 1px 2px rgba(0, 0, 0, 0.03) !important;
+    --input-background-fill: #ffffff !important;
+    --input-border-color: #d1d5db !important;
+    --input-text-color: #1a1a1a !important;
+    --input-placeholder-color: #9ca3af !important;
+    --button-primary-background-fill: #111827 !important;
+    --button-primary-text-color: #ffffff !important;
+    --button-primary-background-fill-hover: #1f2937 !important;
+    --button-secondary-background-fill: #ffffff !important;
+    --button-secondary-text-color: #111827 !important;
+    --button-secondary-background-fill-hover: #f3f4f6 !important;
+    --button-secondary-border-color: #d1d5db !important;
+    --border-color-primary: #e5e7eb !important;
+    --checkbox-background-color: #ffffff !important;
+    --checkbox-background-color-selected: #111827 !important;
+    --checkbox-label-text-color: #111827 !important;
+    --checkbox-label-text-color-selected: #ffffff !important;
+    --checkbox-border-color: #d1d5db !important;
+    --checkbox-border-color-selected: #111827 !important;
+    --link-text-color: #2563eb !important;
+    --body-font: "Inter", -apple-system, "Segoe UI", "PingFang SC",
+        "Microsoft YaHei", "Helvetica Neue", sans-serif !important;
+}
+.gradio-container {
+    background: #fafafa !important;
+    color: #1a1a1a !important;
+    max-width: 100% !important;
+}
+footer { display: none !important; }
+
+/* 侧边栏 */
+.sidebar-col {
+    background: #ffffff !important;
+    border-right: 1px solid #e5e7eb !important;
+    padding: 22px 18px !important;
     min-height: 100vh;
 }
-
-/* 侧边栏中的文字 */
 .sidebar-col label, .sidebar-col .gr-radio label span,
-.sidebar-col p, .sidebar-col h3, .sidebar-col span {
-    color: #333 !important;
-}
+.sidebar-col p, .sidebar-col h3, .sidebar-col span,
 .sidebar-col h1, .sidebar-col h2 {
-    color: #111 !important;
+    color: #111827 !important;
 }
-
-/* 侧边栏 Radio */
 .sidebar-col .gr-radio {
     background: transparent !important;
     border: none !important;
 }
-.sidebar-col input[type="radio"] {
-    accent-color: #4f6ef7;
+.sidebar-col input[type="radio"] { accent-color: #111827; }
+/* 单选框选项（gradio6 用 label 渲染，选中项 class=selected） */
+.sidebar-col label {
+    background: #ffffff !important;
+    color: #111827 !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 8px !important;
+    padding: 6px 10px !important;
+    transition: all 0.15s ease;
 }
-
-/* 侧边栏 Dropdown */
+.sidebar-col label:hover { border-color: #9ca3af !important; }
+.sidebar-col label.selected {
+    background: #f3f4f6 !important;
+    color: #111827 !important;
+    border-color: #111827 !important;
+}
 .sidebar-col select {
-    background: #fff !important;
-    color: #333 !important;
-    border: 1px solid #ddd !important;
-    border-radius: 6px !important;
+    background: #ffffff !important;
+    color: #111827 !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 8px !important;
+    padding: 4px 8px !important;
 }
-
-/* 侧边栏按钮 */
 .sidebar-btn {
-    background: #fff !important;
-    border: 1px solid #e0e0e0 !important;
-    color: #555 !important;
+    background: #ffffff !important;
+    border: 1px solid #d1d5db !important;
+    color: #111827 !important;
     font-size: 13px !important;
-    padding: 6px 12px !important;
-    cursor: pointer;
-    text-align: left !important;
-    border-radius: 6px !important;
-    transition: 0.15s;
+    padding: 8px 14px !important;
+    border-radius: 8px !important;
+    transition: all 0.15s ease;
 }
 .sidebar-btn:hover {
-    background: #f0f0f0 !important;
-    color: #333 !important;
+    background: #f3f4f6 !important;
+    color: #000000 !important;
+    border-color: #9ca3af !important;
 }
 
 /* 主对话区 */
-.chat-col {
-    background: #f8f8f8 !important;
-    padding: 0 !important;
-}
-
-/* Chatbot */
-.chatbot-panel {
-    border: none !important;
-    background: transparent !important;
-}
-.chatbot-panel .message-row {
-    padding: 4px 0;
-}
+.chat-col { background: #fafafa !important; padding: 0 !important; }
+.chatbot-panel { border: none !important; background: transparent !important; }
+.chatbot-panel .message-row { padding: 6px 0; }
 
 /* 用户气泡 */
-.chatbot-panel .user {
-    justify-content: flex-end;
-}
+.chatbot-panel .user { justify-content: flex-end; }
 .chatbot-panel .user .bubble {
-    background: #4f6ef7 !important;
-    color: #fff !important;
-    border-radius: 14px 4px 14px 14px !important;
+    background: #e9edf2 !important;
+    color: #111827 !important;
+    border: 1px solid #dde3ea !important;
+    border-radius: 12px 4px 12px 12px !important;
     padding: 10px 15px !important;
     font-size: 14px;
 }
 
 /* 助手气泡 */
-.chatbot-panel .bot {
-    justify-content: flex-start;
-}
+.chatbot-panel .bot { justify-content: flex-start; }
 .chatbot-panel .bot .bubble {
-    background: #fff !important;
-    color: #222 !important;
-    border-radius: 4px 14px 14px 14px !important;
-    padding: 10px 15px !important;
+    background: #ffffff !important;
+    color: #1f2937 !important;
+    border: 1px solid #e5e7eb !important;
+    border-radius: 4px 12px 12px 12px !important;
+    padding: 12px 16px !important;
     font-size: 14px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    line-height: 1.65;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 /* 输入区 */
 .input-row {
-    border-top: 1px solid #e8e8e8;
-    background: #fff;
-    padding: 12px 24px;
+    border-top: 1px solid #e5e7eb;
+    background: #fafafa;
+    padding: 14px 24px;
 }
 .input-row textarea {
-    border: 1px solid #e0e0e0 !important;
-    border-radius: 12px !important;
-    padding: 10px 16px !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 10px !important;
+    padding: 12px 16px !important;
     font-size: 14px !important;
-    background: #f5f5f5 !important;
+    background: #ffffff !important;
+    color: #111827 !important;
     resize: none !important;
 }
 .input-row textarea:focus {
-    border-color: #4f6ef7 !important;
-    background: #fff !important;
-    box-shadow: 0 0 0 3px rgba(79,110,247,0.1) !important;
+    border-color: #111827 !important;
+    background: #ffffff !important;
+    box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06) !important;
 }
-
-/* 侧边栏分割线和说明 */
-.sidebar-divider {
-    border-top: 1px solid #2a2a30;
-    margin: 12px 0;
-}
+.input-row textarea::placeholder { color: #9ca3af !important; }
 """
 
 # ============================================================
@@ -166,7 +192,7 @@ class ChatSession:
             if not data.get("success"):
                 return f"**[错误]** {data.get('error', '未知错误')}"
 
-            info = data.get("data", {})
+            info = data.get("data") or data  # 兼容响应可能带/不带 data 包装
             intent = info.get("intent", "unknown")
             response = info.get("response", "")
             recommendations = info.get("recommendations", [])
@@ -196,7 +222,7 @@ class ChatSession:
         intent_labels = {
             "recommend": "推荐", "add_constraint": "调整",
             "request_substitute": "替换", "reject_recommendation": "否定",
-            "ask_clarification": "追问", "vague_query": "引导",
+            "ask_clarification": "追问", "vague_query": "推荐",
         }
         label = intent_labels.get(intent, "")
 

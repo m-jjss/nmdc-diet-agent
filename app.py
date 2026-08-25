@@ -1057,6 +1057,7 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
 7. 荤素搭配铁律：每轮推荐至少包含1-2道素菜。搜索时分别搜索荤菜和素菜（用不同query），最终推荐中荤素比例不低于3:2。
    烹饪多样性：推荐中应包含至少3种不同烹饪方式（如炒、蒸、煮、炖、烤、凉拌等），避免全是同一种做法。
 8. 回复中禁止使用 emoji、颜文字或任何表情符号，只用纯文本（可使用编号、换行、星号加粗等常规排版）。
+9. 回复要自然口语化，像真人营养师聊天，有温度。避免"好的，为您推荐以下菜品：A、B、C。您可以告诉我是否需要调整"这类机械模板句；引导语可根据菜品特点变化（如"这几道口味清淡，正适合你"、"按你说的，帮你挑了几道下饭的"）。
 
 当前约束: {pref_summary}
 上一轮推荐列表（保留它们，除非用户要求全部换）: {dm.recommended_recipes[-5:] if dm and dm.recommended_recipes else '无'}"""
@@ -1505,7 +1506,7 @@ def dialog():
             if dm.recommended_recipes:
                 # 如果已有推荐，保持不变，友好回应
                 recipe_names = dm.recommended_recipes[-5:]
-                response_text = f"好的，保留当前推荐：{', '.join(recipe_names)}。有其他想法随时说～"
+                response_text = f"这几道还合胃口吗？先给你留着：{', '.join(recipe_names)}。想换随时说～"
                 recommendations = []
                 for name in recipe_names:
                     recipe = retriever.get_recipe_by_name(name)
@@ -1524,7 +1525,14 @@ def dialog():
                 recipe_names = [r['name'] for r in recommendations]
                 dm.add_recommended_recipes(recipe_names)
                 
-                response_text = f"好的，为您推荐以下菜品：{', '.join(recipe_names)}。您可以告诉我是否需要调整！"
+                names = '、'.join(recipe_names)
+                if any(k in message for k in ['甜', '清淡', '素', '健康', '养生']):
+                    intro = f"按你的偏好，给你配了一桌清淡不腻的：{names}。"
+                elif any(k in message for k in ['辣', '重口', '口味重', '下饭']):
+                    intro = f"这几道够味够下饭：{names}。"
+                else:
+                    intro = f"帮你配好了这 {len(recipe_names)} 道：{names}。"
+                response_text = f"{intro}看看合不合胃口，想调整随时说～"
         
         elif intent == 'request_substitute':
             # 用户请求替换某道菜（最小化修改原则）
