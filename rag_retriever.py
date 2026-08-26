@@ -651,11 +651,20 @@ class RAGRetriever:
             ]
         
         if filters.get('low_sugar'):
-            sweet_keywords = ['糖', '蜂蜜', '冰糖', '白糖', '甜点']
+            # 甜味来源：添加糖（糖/蜂蜜/冰糖/白糖/甜点）或食材本身带甜（紫薯/芋泥/红薯/山药/香蕉/芒果）
+            sweet_addeds = ['糖', '蜂蜜', '冰糖', '白糖', '甜点']
+            sweet_ints = ['紫薯', '芋泥', '红薯', '地瓜', '山药', '南瓜', '香蕉', '芒果', '枣泥', '红豆沙']
             filtered = [
                 r for r in filtered
                 if not any(s in ' '.join([str(i).lower() for i in r.get('ingredients', [])])
-                          for s in sweet_keywords)
+                          for s in sweet_addeds)
+                # 名称/标签/描述含"甜/甜品"或配料含高甜食材 → 排除（如"紫薯芋泥切糕"标"甜"）
+                if not (any(f in str(r.get('name', '')).lower()
+                           or f in ' '.join([str(t).lower() for t in r.get('tags', [])])
+                           or f in str(r.get('description', '')).lower()
+                           for f in ['甜', '甜点', '甜品', '糖']) or
+                        any(f in ' '.join(self._safe_ingredients(r))
+                            for f in sweet_ints))
             ]
         
         if filters.get('vegetarian'):

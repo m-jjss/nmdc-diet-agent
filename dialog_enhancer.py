@@ -161,7 +161,8 @@ class DialogManager:
             'vegetarian': ['素食', '不吃肉', '素菜'],
             'low_fat': ['低脂', '少油', '清淡'],
             'low_spicy': ['不辣', '少辣', '微辣', '别做辣的', '不要辣', '别辣', '不吃辣', '别太辣', '不要太辣'],
-            'low_sugar': ['低糖', '无糖', '别太甜', '不要太甜'],
+            'low_sugar': ['低糖', '无糖', '别太甜', '不要太甜', '不要甜', '不吃甜', '不想吃甜的',
+                          '别吃甜', '不爱吃甜', '别来甜的', '不想要甜的', '不要甜的', '不吃甜的'],
             'light': ['清淡']
         }
         
@@ -177,6 +178,17 @@ class DialogManager:
                 if '辣' in ing:
                     extracted['preferences']['low_spicy'] = True
                     break
+        
+        # 排除食材中含"甜的/糖"也应触发 low_sugar（并把这类口味词从排除食材中去掉，避免误当食材过滤）
+        if not extracted['preferences'].get('low_sugar'):
+            for ing in extracted.get('excluded_ingredients', []):
+                if '甜' in ing or '糖' in ing:
+                    extracted['preferences']['low_sugar'] = True
+                    break
+        extracted['excluded_ingredients'] = [
+            i for i in extracted.get('excluded_ingredients', [])
+            if '甜' not in i and '辣' not in i
+        ]
         
         # 正向辣味需求：说"刺激/过瘾/重口/想吃辣"是想要辣（而非不要辣）
         spicy_want_keywords = ['刺激', '过瘾', '重口味', '重口', '口味重', '想吃辣', '来点辣', '要辣',
