@@ -15,6 +15,7 @@ from constraint_engine import ConstraintEngine
 from dialog_enhancer import DialogManager
 from result_verifier import ResultVerifier
 from orchestrator import ORCHESTRATOR, DialogContext
+from nutrition_planner import plan_nutrition_gaps
 
 # ─── 营养数据库加载 ──────────────────────────────────────
 MEAL_NUTRITION_DB = {}
@@ -258,6 +259,64 @@ _CACHE_TTL = 300  # 5分钟
 
 # 全局计时统计（跨会话聚合）
 _global_timings = []  # 保留最近 200 条
+
+# ─── 持久化记忆：用户饮食习惯临时磁盘保存 ────────────────
+# 按 user_id 把 DialogManager 状态落盘，服务重启后仍能记住"不吃虾/爱辣"等偏好。
+# 数据为纯文本/偏好，不含任何敏感凭证，仅用于满足竞赛"个性化记忆"要求。
+_DIALOG_STORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.dialog_store')
+_MEMORY_LOCK = threading.Lock()
+
+
+def _dialog_store_path(user_key: str) -> str:
+    """把 user_id 映射为安全的文件路径（避免中文/特殊字符）。"""
+    safe = hashlib.md5(str(user_key).encode('utf-8')).hexdigest()
+    return os.path.join(_DIALOG_STORE_DIR, f"{safe}.json")
+
+
+def _save_dialog(user_key: str, dm) -> None:
+    """把对话管理器状态落盘。失败时只告警，不阻塞主流程。"""
+    if not user_key:
+        return
+    try:
+        os.makedirs(_DIALOG_STORE_DIR, exist_ok=True)
+        path = _dialog_store_path(user_key)
+        with _MEMORY_LOCK:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(dm.to_dict(), f, ensure_ascii=False, default=str)
+    except Exception as e:
+        print(f"[memory] 保存失败 {user_key}: {e}", flush=True)
+
+
+def _load_dialog(user_key: str):
+    """尝试从磁盘恢复用户之前的饮食习惯；无记录或损坏时返回 None。"""
+    if not user_key:
+        return None
+    try:
+        path = _dialog_store_path(user_key)
+        if not os.path.exists(path):
+            return None
+        with _MEMORY_LOCK:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        dm = DialogManager()
+        dm.from_dict(data)
+        return dm
+    except Exception as e:
+        print(f"[memory] 加载失败 {user_key}: {e}", flush=True)
+        return None
+
+
+def _clear_dialog_memory(user_key: str) -> None:
+    """删除某个用户已保存的饮食习惯记忆（新对话/重置时调用）。"""
+    if not user_key:
+        return
+    try:
+        path = _dialog_store_path(user_key)
+        with _MEMORY_LOCK:
+            if os.path.exists(path):
+                os.remove(path)
+    except Exception as e:
+        print(f"[memory] 清除失败 {user_key}: {e}", flush=True)
 
 # Agent 工具定义 (OpenAI Function Calling 格式)
 AGENT_TOOLS = [
@@ -1299,7 +1358,11 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
         if dm and dm.recommended_recipes:
             _keep_filters = dict(dm.get_search_filters()) if dm else {}
             _existing = {r.get('name', '') for r in recommendations}
-            for _hname in dm.recommended_recipes:
+            # 只基于"当前方案"（最近一轮实际推荐）做最小化修改保留：
+            # 用户追加约束（如"不吃鱼"）时，应保留上一轮仍符合新约束的菜，
+            # 而不是从整段历史里去重累加集合里捞旧菜（那会把早期甜品又拉回来）。
+            _plan = dm.last_recommendation or dm.recommended_recipes[-5:]
+            for _hname in _plan:
                 if _hname in _existing:
                     continue
                 _full = retriever.get_recipe_by_name(_hname)
@@ -1565,19 +1628,123 @@ def _handler_nutrition(ctx: DialogContext):
     ctx.recommendations = []
 
 
+def _parse_ingredient_names(ingredients, top=6):
+    """从食材字符串里抽取出清爽的食材名。"""
+    if isinstance(ingredients, list):
+        ingredients = '，'.join(str(x) for x in ingredients)
+    parts = re.split(r'[；;]+', str(ingredients))
+    names = []
+    for p in parts:
+        p = p.strip()
+        p = re.sub(r'^(A|B|C|D|李锦记|金龙鱼)?料[:：]?', '', p)
+        p = re.sub(r'^[（(]?[主辅调料]*料[:：]?', '', p)  # 兼容"辅料：""调料："等前缀
+        m = re.match(r'^[A-Za-z\u4e00-\u9fa5·\s]{1,10}(?=\d)', p)
+        nm = (m.group(0).strip() if m else
+              (re.match(r'^[A-Za-z\u4e00-\u9fa5]{1,8}', p).group(0).strip()
+               if re.match(r'^[A-Za-z\u4e00-\u9fa5]{1,8}', p) else ''))
+        if nm and nm not in ('适量', '少许', '若干', 'A', 'B'):
+            names.append(nm)
+    seen, out = set(), []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out[:top]
+
+
+def _count_steps(steps) -> int:
+    if isinstance(steps, list):
+        return len(steps)
+    return len(re.findall(r'第[一二三四五六七八九十0-9]+步', str(steps)))
+
+
+def _split_steps(steps):
+    """把长步骤串拆成每一步的列表。"""
+    if isinstance(steps, list):
+        return [str(s).strip() for s in steps if str(s).strip()]
+    items = re.split(r'第[一二三四五六七八九十0-9]+步[：:]', str(steps))
+    return [s.strip() for s in items if s.strip()]
+
+
+def _format_detail_brief(recipe):
+    """简略版：评分、用时、难度、主要食材 + 一句话做法概要，末尾追问是否需要详细。"""
+    name = recipe.get('name', '')
+    ct = recipe.get('cooking_time') or ''
+    diff = recipe.get('difficulty') or ''
+    steps = recipe.get('steps') or recipe.get('description') or ''
+    n = _count_steps(steps)
+    ing = '、'.join(_parse_ingredient_names(recipe.get('ingredients', '')))
+    items = _split_steps(steps)
+    first = ''
+    if items:
+        first = items[0].split('（')[0].strip().rstrip('。，；;')
+    first = (first[:40] + '……') if len(first) > 40 else first
+    meta = ' · '.join(x for x in [f'用时约 {ct}' if ct else '', diff if diff else '',
+                                  f'{n} 步' if n else ''] if x)
+    return (f"关于【{name}】{('（' + meta + '）') if meta else ''}\n"
+            f"主要食材：{ing}\n"
+            f"做法概要：{first}\n\n"
+            f"简要做法就是这样～需要我把每一步详细讲讲吗？")
+
+
+def _format_detail_full(recipe):
+    """详细版：完整食材 + 每一步编号展开。"""
+    name = recipe.get('name', '')
+    steps = recipe.get('steps') or recipe.get('description') or recipe.get('method') or ''
+    ing = recipe.get('ingredients', '')
+    if isinstance(ing, list):
+        ing = '，'.join(str(x) for x in ing)
+    items = _split_steps(steps)
+    body = '\n'.join(f"{i}. {s.rstrip('。；;')}" for i, s in enumerate(items, 1)) if items else str(steps)
+    return (f"【{name}】详细做法\n"
+            f"食材：{ing}\n\n"
+            f"{body}\n\n"
+            f"照着这个顺序做就好啦，有什么拿不准可以再问我～还有其他想吃的也欢迎告诉我哦")
+
+
 def _handler_detail(ctx: DialogContext):
-    """菜谱详情 Agent：返回指定菜品的食材与做法。"""
-    message = ctx.message
-    response_text = ""
-    for recipe in ctx.retriever.recipes:
-        if recipe.get('name', '') in message:
-            response_text = (f"菜品【{recipe['name']}】\n"
-                             f"食材：{', '.join(recipe.get('ingredients', []))}\n"
-                             f"做法：{recipe.get('description', recipe.get('method', '暂无'))}")
+    """菜谱详情 Agent：先给简略版，用户再追问"详细"时展开完整步骤。"""
+    message = ctx.message.strip()
+    dm = getattr(ctx, 'dm', None)
+    retriever = ctx.retriever
+
+    # 上轮给过简略版，用户想继续追问 -> 直接给详细步骤
+    pending = getattr(dm, '_detail_pending', None) if dm else None
+    if pending and re.search(r'(详细|讲讲|说说|具体|继续|再来|再讲|好|嗯|可以|要|来|想看)', message):
+        r = retriever.get_recipe_by_name(pending.get('name', ''))
+        if r:
+            ctx.response_text = _format_detail_full(r)
+            ctx.recommendations = []
+            if dm is not None:
+                dm._detail_pending = None
+            return
+
+    # 1) 优先从当前消息定位菜名（精确包含或名字包含在句中）
+    target = None
+    for recipe in retriever.recipes:
+        name = recipe.get('name', '')
+        if name and name in message:
+            target = recipe
             break
-    if not response_text:
-        response_text = "请告诉我您想了解哪道菜的做法。"
-    ctx.response_text = response_text
+    # 2) 消息未点名菜名时，承接对话上下文：取最近一次推荐（当前方案）里的菜
+    if target is None:
+        cand_names = []
+        if dm is not None:
+            cand_names = (getattr(dm, 'last_recommendation', None)
+                          or (dm.recommended_recipes[-1:] if dm.recommended_recipes else []))
+        for name in reversed(cand_names):
+            r = retriever.get_recipe_by_name(name)
+            if r:
+                target = r
+                break
+    if target is None:
+        ctx.response_text = "请告诉我您想了解哪道菜的做法（例如“怎么做【菜名】”）。"
+        ctx.recommendations = []
+        return
+
+    if dm is not None:
+        dm._detail_pending = {'name': target['name']}
+    ctx.response_text = _format_detail_brief(target)
     ctx.recommendations = []
 
 
@@ -1840,18 +2007,19 @@ def dialog():
         engine = get_engine()
         llm = get_llm()
         
-        # 创建或获取对话管理器
+        # 创建或获取对话管理器（优先从磁盘恢复之前的饮食习惯记忆）
         dialog_key = user_id or "anonymous"
         if dialog_key not in _dialog_managers:
             if len(_dialog_managers) >= _MAX_DIALOG_MANAGERS:
                 _dialog_managers.pop(next(iter(_dialog_managers)), None)
-            _dialog_managers[dialog_key] = DialogManager()
+            _dialog_managers[dialog_key] = _load_dialog(dialog_key) or DialogManager()
         
         dm = _dialog_managers[dialog_key]
         
-        # 重置对话（如果请求）
+        # 重置对话（如果请求）：清空内存态，并一并清除已保存的记忆
         if reset:
             dm.reset_dialog()
+            _clear_dialog_memory(dialog_key)
         
         # 新用户引导流程：预置用户(user_id 在1-50)跳过引导，新用户自动触发
         if not user_id or (isinstance(user_id, str) and not user_id.isdigit()) or (isinstance(user_id, str) and not (1 <= int(user_id) <= 50)):
@@ -1866,6 +2034,7 @@ def dialog():
             response_text = dm.process_onboarding(message)
             if response_text:
                 dm.add_message('assistant', response_text)
+                _save_dialog(dialog_key, dm)  # 引导过程中也记录已表达的偏好/忌口
                 return jsonify({
                     'success': True,
                     'data': {
@@ -2084,6 +2253,8 @@ def dialog():
         if len(_global_timings) > 200:
             _global_timings.pop(0)
         
+        _save_dialog(dialog_key, dm)  # 持久化记忆：记录本轮后的饮食习惯
+        
         return jsonify({
             'success': True,
             'user_id': user_id,
@@ -2142,12 +2313,13 @@ def dialog_stream():
         if dialog_key not in _dialog_managers:
             if len(_dialog_managers) >= _MAX_DIALOG_MANAGERS:
                 _dialog_managers.pop(next(iter(_dialog_managers)), None)
-            _dialog_managers[dialog_key] = DialogManager()
+            _dialog_managers[dialog_key] = _load_dialog(dialog_key) or DialogManager()
         
         dm = _dialog_managers[dialog_key]
         
         if reset:
             dm.reset_dialog()
+            _clear_dialog_memory(dialog_key)
         
         dm.add_message('user', message)
         preferences = dm.extract_preferences(message)
@@ -2169,16 +2341,74 @@ def dialog_stream():
         INTENT_SYN = {'vague': 'vague_query', 'replace': 'request_substitute',
                       'reject': 'reject_recommendation', 'set_preference': 'set_preferences'}
         intent = INTENT_SYN.get(intent, intent)
-        
-        # 检查缓存（缓存键必须包含 user_ids，避免多人场景缓存串扰）
+
+        # 强意图覆盖：明确询问"怎么做/做法/步骤/怎么制作"时锁定为菜谱详情意图，
+        # 避免 LLM/关键词把"怎么做X"误判成推荐返回一堆新菜。
+        # 上轮刚给过"简略版"时，用户说"详细讲讲/继续/好"等追问，同样进入菜谱详情。
+        if (re.search(r'(怎么做|怎么制作|怎么弄|如何做|制作方法|怎么烧|怎么煮|怎么蒸|怎么炸|步骤|做法)',
+                      message)
+                or (getattr(dm, '_detail_pending', None)
+                    and re.search(r'(详细|讲讲|说说|具体|继续|再来|再讲|好|嗯|可以|要)', message))):
+            intent = 'ask_recipe_detail'
+
+        # 专职 Agent 文本意图（菜谱详情/营养等）：不进入推荐 generate，直接 dispatch 生成回复，
+        # 保证 Gradio 流式接口也能正确响应"怎么做X"这类询问。
+        if intent in ('ask_recipe_detail', 'ask_nutrition') and ORCHESTRATOR.has_handler(intent):
+            _ctx = DialogContext(
+                dm=dm, retriever=retriever, engine=engine, llm=llm,
+                message=message, user_id=user_id, user_ids=user_ids,
+                preferences=preferences, search_query=search_query,
+            )
+            try:
+                ORCHESTRATOR.dispatch(intent, _ctx)
+            except Exception as _de:
+                print(f"[stream] 专职Agent分发失败: {_de}", flush=True)
+            _resp = _ctx.response_text or "抱歉，我暂时没找到相关信息。"
+            dm.add_message('system', _resp)
+
+            def _special_stream():
+                _res = {
+                    'id': f"chatcmpl-{int(time.time() * 1000)}",
+                    'object': 'chat.completion.chunk',
+                    'created': int(time.time()),
+                    'model': 'deepseek-v4-flash',
+                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}],
+                    'event': 'complete',
+                    'data': {
+                        'user_id': user_id,
+                        'intent': intent,
+                        'response': _resp,
+                        'recommendations': _ctx.recommendations or [],
+                        'dialog_turns': dm.turn_count,
+                    }
+                }
+                yield f"data: {json.dumps(_res, ensure_ascii=False)}\n\n"
+                yield "event: end\ndata: {}\n\n"
+            return Response(_special_stream(), content_type='text/event-stream; charset=utf-8')
+
+        # 检查缓存（缓存键必须包含 user_ids + 多样性种子：
+        # 同一 user_id 在"新对话"（种子已自增）后不应命中旧缓存，避免与新一批推荐冲突）
         uid_part = '_'.join(sorted(user_ids)) if user_ids else ''
-        cache_key = hashlib.md5(f"{dialog_key}_{uid_part}_{message}".encode()).hexdigest()
+        cache_key = hashlib.md5(
+            f"{dialog_key}_{uid_part}_{message}_{dm.diversity_seed}".encode()
+        ).hexdigest()
         cached = _request_cache.get(cache_key)
         if cached and time.time() - cached['timestamp'] < _CACHE_TTL:
             def cached_stream():
-                yield f"data: {json.dumps(cached['data'], ensure_ascii=False)}\n\n"
+                # 缓存命中：同样套上 OpenAI 兼容 + "event":"complete" 包裹，
+                # 保证 Gradio 端按统一格式解析（否则裸 data 帧无 event 字段，前端什么都不渲染）。
+                _res = {
+                    'id': f"chatcmpl-{int(time.time() * 1000)}",
+                    'object': 'chat.completion.chunk',
+                    'created': int(time.time()),
+                    'model': 'deepseek-v4-flash',
+                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}],
+                    'event': 'complete',
+                    'data': cached['data'],
+                }
+                yield f"data: {json.dumps(_res, ensure_ascii=False)}\n\n"
                 yield "event: end\ndata: {}\n\n"
-            return Response(cached_stream(), content_type='text/event-stream')
+            return Response(cached_stream(), content_type='text/event-stream; charset=utf-8')
         
         def generate():
             t_start = time.perf_counter()
@@ -2189,9 +2419,31 @@ def dialog_stream():
                 for e in neg_ex:
                     if e not in dm.user_preferences.get('excluded_ingredients', []):
                         dm.user_preferences['excluded_ingredients'].append(e)
-            search_q = core if core else ('晚餐' if neg_ex else message)
-            if search_query:
-                search_q = search_query
+            # 泛化提问（"吃什么/随便/推荐看看"）无明确菜向：不做语义检索（"吃什么"会命中海鲜簇），
+            # 退化为平衡的一餐默认检索，避免推荐与问题完全脱节。
+            _vague = {'吃什么', '吃点啥', '吃点吗', '随便', '看看', '看看有什么', '有啥',
+                      '推荐', '推荐推荐', '来点', '有什么', '还有什么', '有什么吃的', '帮我看看'}
+            core_clean = core.strip()
+            veg_want = bool(filters.get('vegetarian'))
+            # 不为泛化/具体请求再叠加LLM改写：LLM的 search_query 在此路径会拿"吃什么"改出海鲜等偏置词，
+            # 造成推荐与问题脱节。这里用确定性规则：素/有明确菜向/否则家常均衡默认。
+            if veg_want:
+                # 要素/全素：用素菜检索词，配合 vegetarian 硬过滤保证全素
+                search_q = '素菜 蔬菜 清淡 凉拌 蒸菜 豆腐 青菜'
+            elif core_clean and core_clean not in _vague:
+                # 用户明确给了具体菜/口味：优先用清洗过的核心词
+                search_q = core_clean
+            else:
+                # 泛化（"吃什么/随便"）或纯排除（不吃X但没说要吃什么）：给一套家常荤素均衡默认。
+                # 用多样性种子轮换多个等价检索词，避免同一 user_id 每次"新对话"都返回同一批菜。
+                _default_qs = [
+                    '家常菜 荤素搭配 晚餐',
+                    '家常菜 营养均衡 荤素搭配',
+                    '家庭晚餐 简单快手 荤素均衡',
+                    '晚餐推荐 家常菜 清淡多样',
+                    '家常菜 汤菜搭配 均衡一餐',
+                ]
+                search_q = _default_qs[dm.diversity_seed % len(_default_qs)]
             
             results = retriever.search(search_q, top_k=10, filters=filters)
             t_search = time.perf_counter()
@@ -2207,11 +2459,18 @@ def dialog_stream():
             # 用户追加"不吃鱼"等约束时，不应把已认可的历史菜全换掉：
             # 把仍符合当前检索过滤条件的历史菜置顶并入。
             try:
-                if dm.recommended_recipes:
+                # 仅当本回合是"追加排除约束"时才保留当前方案（最小化修改）：
+                # 用户说"想吃菜/能不能全是菜"等口味重定向时，应全新检索而非继续堆旧方案；
+                # 说"不吃鱼/不要巧克力"等排除时，保留当前方案中仍合规的菜。
+                if neg_ex and dm.recommended_recipes:
                     _keep_filters = dict(dm.get_search_filters()) if dm else {}
                     _existing = {r.get('name', '') for r in recommendations}
                     _kept_list = []
-                    for _hname in dm.recommended_recipes:
+                    # 只基于"当前方案"（最近一轮实际推荐）做最小化修改保留：
+                    # 用户追加约束（如"不吃鱼"）时，应保留上一轮仍符合新约束的菜，
+                    # 而不是从整段历史里去重累加集合里捞旧菜（那会把早期甜品又拉回来）。
+                    _plan = dm.last_recommendation or dm.recommended_recipes[-5:]
+                    for _hname in _plan:
                         if _hname in _existing:
                             continue
                         _full = retriever.get_recipe_by_name(_hname)
@@ -2220,6 +2479,9 @@ def dialog_stream():
                         if retriever._apply_filters([_full], _keep_filters):
                             _kept_list.append(_full)
                             _existing.add(_hname)
+                        # 最多保留4道旧菜，给新检索结果留至少1个名额，避免旧方案完全锁死本回合
+                        if len(_kept_list) >= 4:
+                            break
                     if _kept_list:
                         _merged = list(_kept_list)
                         _mn = {r.get('name', '') for r in _merged}
@@ -2242,6 +2504,14 @@ def dialog_stream():
                 )
                 if gen:
                     recommendations = [gen]
+            # 营养统计：为每道推荐补齐营养评估（供前端菜品卡片显示热量等信息），
+            # 与 /api/recommend 非流式路径保持一致。
+            try:
+                for r in recommendations:
+                    if 'nutrition' not in r or not r['nutrition']:
+                        r['nutrition'] = engine.evaluate_nutrition(r)
+            except Exception as _ne:
+                print(f"[stream] 营养评估失败: {_ne}", flush=True)
             recipe_names = [r['name'] for r in recommendations]
             dm.add_recommended_recipes(recipe_names)
             
@@ -2258,15 +2528,23 @@ def dialog_stream():
                 'data': {
                     'user_id': user_id,
                     'intent': intent,
-                    'recommendations': [{'name': r['name'], 'tags': r.get('tags', [])} for r in recommendations],
+                    'recommendations': [{'name': r['name'], 'tags': r.get('tags', []),
+                                          'nutrition': r.get('nutrition', {})} for r in recommendations],
                     'context_summary': context_summary,
                     'dialog_turns': dm.turn_count
                 }
             }
             yield f"data: {json.dumps(partial_result, ensure_ascii=False)}\n\n"
             
-            # 精简提示词，降低首Token延迟
-            llm_context = f"推荐: {', '.join(recipe_names)}。1-2句话说明推荐理由。"
+            # 精简提示词，降低首Token延迟。用确定性叙述锚定，防止LLM编造列表外的菜名、
+            # 或把纯素菜/甜品错标成"荤菜"、或是叙述与结构化列表脱节。
+            consistent = _build_consistent_response(recommendations)
+            llm_context = (
+                f"本次已为您配好的菜（一个都不能改、不能增、不能删，也不要重复这串菜名）："
+                f"{'、'.join(recipe_names)}。\n"
+                f"开篇请直接引用这句且不要改动：{consistent}\n"
+                f"若需要，可再补充1句不超过25字的简短推荐理由。不要编造其他菜，不要给菜品贴荤素/口味标签。"
+            )
             
             response_text = ""
             first_token_ms = None
@@ -2332,7 +2610,20 @@ def dialog_stream():
             })
             if len(_global_timings) > 200:
                 _global_timings.pop(0)
-            
+
+            # ── 按人营养摄入概览（追加到回复底部，与 /api/dialog 非流式路径一致）──
+            try:
+                _rnames = [r['name'] for r in recommendations] if recommendations else []
+                if _rnames:
+                    _nut_summary = compute_meal_nutrition_summary(
+                        _rnames,
+                        user_ids=user_ids if user_ids else ([user_id] if user_id else None)
+                    )
+                    if _nut_summary:
+                        response_text = f"{response_text or ''}\n{_nut_summary}"
+            except Exception as _ne:
+                print(f"[stream] 营养概览生成失败: {_ne}", flush=True)
+
             final_result = {
                 'id': f"chatcmpl-{int(time.time() * 1000)}",
                 'object': 'chat.completion.chunk',
@@ -2363,8 +2654,9 @@ def dialog_stream():
                 'timestamp': time.time(),
                 'data': final_result['data']
             }
+            _save_dialog(dialog_key, dm)  # 持久化记忆：记录本轮后的饮食习惯
         
-        return Response(generate(), content_type='text/event-stream')
+        return Response(generate(), content_type='text/event-stream; charset=utf-8')
     
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2615,12 +2907,14 @@ def compute_meal_nutrition_summary(recipe_names: list, user_ids: list = None,
     per_fat = total['脂肪'] / num_people
     per_carb = total['碳水'] / num_people
     
-    # 按人需求参考（如果提供了 user_ids）
+    # 按人需求参考（如果提供了 user_ids）；同时收集用户档案供营养缺口检测使用
     per_person_lines = []
+    user_profiles = []
     if user_ids and engine:
         for uid in user_ids:
             profile = engine.get_user_profile(uid)
             if profile:
+                user_profiles.append(profile)
                 age = profile.get('年龄', profile.get('age', '?'))
                 weight = profile.get('体重(kg)', profile.get('weight', '?'))
                 if isinstance(weight, str) and 'kg' in str(weight):
@@ -2635,6 +2929,22 @@ def compute_meal_nutrition_summary(recipe_names: list, user_ids: list = None,
     
     if num_people > 1:
         lines.append(f"  （基于{num_people}人用餐计算）")
+    
+    # ── 营养缺口检测与实规划：对比本餐人均摄入 vs 用户每餐参考值，给出可执行调整建议 ──
+    try:
+        planner_text = plan_nutrition_gaps(
+            {
+                '热量': per_kcal,
+                '蛋白质': per_protein,
+                '脂肪': per_fat,
+                '碳水': per_carb,
+            },
+            user_profiles=user_profiles or None,
+        )
+        if planner_text:
+            lines.append(planner_text)
+    except Exception as _pe:
+        print(f"[nutrition] 营养规划生成失败: {_pe}", flush=True)
     
     return "\n".join(lines)
 

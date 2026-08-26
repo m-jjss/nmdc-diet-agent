@@ -45,11 +45,19 @@ class DialogManager:
         # 对话轮数计数器
         self.turn_count: int = 0
         
-        # 已推荐的菜品列表（用于避免重复推荐或支持方案否定）
+        # 已推荐的菜品列表（用于避免重复推荐或支持方案否定；去重累加）
         self.recommended_recipes: List[str] = []
-        
+
+        # 最近一轮实际推荐的完整菜品列表（"当前方案"，供 最小化修改/上下文回溯 使用）
+        self.last_recommendation: List[str] = []
+
         # 用户否定的菜品列表
         self.rejected_recipes: List[str] = []
+        
+        # 单调递增的多样性种子：每开一次"新对话"（重置）自增。
+        # 用于在泛化提问（"吃什么"）时轮换检索词/候选顺序，并参与缓存键，
+        # 保证"新对话"后即使同一 user_id 也能得到不同的推荐，而不是每次固定同一批菜。
+        self.diversity_seed = 0
         
         # 当前轮次提取的约束变更类型
         self.last_action: str = None
@@ -158,9 +166,11 @@ class DialogManager:
         
         # 识别饮食偏好
         preference_keywords = {
-            # 素食：除"素食"外，覆盖"吃素/只吃素/纯素/全素"等口语表达
+            # 素食：除"素食"外，覆盖"吃素/只吃素/纯素/全素"及"想吃菜/全是菜"等口语表达
             'vegetarian': ['素食', '不吃肉', '素菜', '吃素', '只吃素', '纯素', '全素',
-                           '都是素', '就想吃素', '别给我荤'],
+                           '都是素', '就想吃素', '别给我荤', '想吃菜', '要素菜', '要吃菜',
+                           '全是菜', '都是菜', '多点菜', '多吃菜', '素一点', '只要蔬菜',
+                           '多吃蔬菜', '多点蔬菜'],
             # 想吃荤/肉：正向荤菜偏好
             'meat': ['想吃肉', '吃肉', '想吃点肉', '想来点肉', '想吃荤', '想吃点荤',
                      '来点肉', '要肉', '肉菜', '开荤', '无肉不欢', '想吃牛肉', '想吃鸡肉',
@@ -386,7 +396,7 @@ class DialogManager:
             'request_substitute': ['替换', '换个', '换掉.*菜', '把.*换成', '换成.*菜'],
             'request_more': ['再来一个', '再推荐', '多一些', '还有吗', '再多几个', '再来几个'],
             'ask_nutrition': ['热量', '卡路里', '成分', '多少卡', '营养成分', '营养.*多少', '营养.*吗', '营养.*如何', '有什么营养'],
-            'ask_recipe_detail': ['怎么做', '做法', '步骤', '食材', '配料', '详细', '步骤是什么'],
+            'ask_recipe_detail': ['怎么做', '做法', '步骤', '食材', '配料', '详细', '步骤是什么', '怎么制作', '怎么弄', '如何做', '制作方法', '怎么烧', '怎么煮', '怎么蒸', '怎么炸'],
             'set_preferences': ['设置', '偏好', '过敏', '不吃', '不要'],
             'modify_preferences': ['修改', '更改', '重新设置', '调整'],
             'add_constraint': ['别太', '不要', '清淡', '不要太', '少放', '加个', '再来个', '还要', '最好'],
@@ -604,6 +614,10 @@ class DialogManager:
         for name in recipe_names:
             if name not in self.recommended_recipes:
                 self.recommended_recipes.append(name)
+        # 同时记录"当前方案"：覆盖为最近一次实际推荐的菜品集合，
+        # 供追加约束时的"最小化修改"保留使用（只改违反约束的菜，不无故推翻全案）。
+        if recipe_names:
+            self.last_recommendation = list(dict.fromkeys(recipe_names))
     
     def add_rejected_recipe(self, recipe_name: str):
         """
@@ -865,7 +879,9 @@ class DialogManager:
         重置对话状态
         
         清空对话历史和用户偏好，恢复初始状态。
+        同时推进多样性种子，使"新对话"后即便用同一 user_id 也能得到不同的推荐。
         """
+        self.diversity_seed += 1
         self.history = []
         self.user_preferences = {
             'allergies': [],
@@ -881,8 +897,47 @@ class DialogManager:
         self.dialog_state = 'initial'
         self.turn_count = 0
         self.recommended_recipes = []
+        self.last_recommendation = []
         self.rejected_recipes = []
         self.last_action = None
+
+    # ---- 持久化记忆：序列化/反序列化（供磁盘临时保存用户饮食习惯） ----
+    def to_dict(self) -> Dict:
+        """将对话管理器状态序列化为可 JSON 化的字典。"""
+        return {
+            'history': self.history,
+            'user_preferences': self.user_preferences,
+            'dialog_state': self.dialog_state,
+            'turn_count': self.turn_count,
+            'recommended_recipes': self.recommended_recipes,
+            'last_recommendation': self.last_recommendation,
+            'rejected_recipes': self.rejected_recipes,
+            'last_action': self.last_action,
+            'diversity_seed': self.diversity_seed,
+            'onboarding_step': self.onboarding_step,
+            'is_onboarding': self.is_onboarding,
+            'onboarding_data': self.onboarding_data,
+            'rejected_and_negative': getattr(self, 'rejected_and_negative', []),
+        }
+
+    def from_dict(self, data: Dict):
+        """从序列化字典恢复对话管理器状态。"""
+        if not data:
+            return
+        self.history = data.get('history', []) or []
+        self.user_preferences = {**(self.user_preferences), **(
+            data.get('user_preferences', {}) or {})}
+        self.dialog_state = data.get('dialog_state', 'initial') or 'initial'
+        self.turn_count = data.get('turn_count', 0) or 0
+        self.recommended_recipes = data.get('recommended_recipes', []) or []
+        self.last_recommendation = data.get('last_recommendation', []) or []
+        self.rejected_recipes = data.get('rejected_recipes', []) or []
+        self.last_action = data.get('last_action')
+        self.diversity_seed = data.get('diversity_seed', 0) or 0
+        self.onboarding_step = data.get('onboarding_step', 0) or 0
+        self.is_onboarding = data.get('is_onboarding', False) or False
+        self.onboarding_data = {**self.onboarding_data, **(
+            data.get('onboarding_data', {}) or {})}
     
     def should_confirm(self) -> bool:
         """
@@ -1037,18 +1092,48 @@ class DialogManager:
                     return result['preferences']
             except Exception as e:
                 print(f'[WARN] LLM偏好提取失败，回退关键词: {e}')
-        return self._extract_preferences_keyword(user_message)
+        prefs = self._extract_preferences_keyword(user_message)
+        # 关键词兜底同样落库，保证后续 get_search_filters() 能读到（如"想吃菜"→vegetarian）
+        # _update_preferences 为增量合并，不会清空已有偏好。
+        self._update_preferences(prefs)
+        return prefs
 
     def detect_with_llm(self, user_message: str, llm_client) -> Optional[Dict]:
         """一次LLM调用同时返回意图和偏好"""
         return self._detect_with_llm(user_message, llm_client)
 
     def _detect_with_llm(self, user_message: str, llm_client) -> Optional[Dict]:
-        """LLM驱动的意图识别+偏好提取"""
+        """LLM驱动的意图识别+偏好提取（带最近对话上下文，支持指代/承接）"""
+        # 最近对话上下文（最多保留 6 轮），用于理解"这个/那个/刚说的X"等指代
+        # 与跨轮复合需求（如上一轮"上火了"，这轮"那来点清淡的"）。
+        hist = []
+        for m in self.history[-8:]:
+            role = str(m.get('role', ''))
+            if role not in ('user', 'assistant', 'system'):
+                continue
+            who = '用户' if role == 'user' else ('助手' if role == 'assistant' else '助手')
+            content = str(m.get('content', '')).strip()
+            if not content:
+                continue
+            hist.append(f"{who}: {content[:200]}")
+        history_ctx = '\n'.join(hist[-6:]) if hist else '无'
+        # 去掉与当前消息重复的最后一条（避免上下文与<用户消息>重复）
+        if hist and history_ctx.endswith(f"用户: {user_message[:200]}"):
+            hist = hist[:-1]
+            history_ctx = '\n'.join(hist[-6:]) if hist else '无'
+
         prompt = f"""你是膳食规划Agent的意图识别模块。分析用户消息，严格只返回JSON。
 
-<用户消息>
+<用户消息（当前这一轮）>
 {user_message}
+
+<最近对话上下文（用于理解指代"这个/那个"、承接跨轮复合需求；最新在最后）>
+{history_ctx}
+
+<对话规律>
+- 若<用户消息>里出现"这个/那个/它/刚说的""上面那道""那道X"等指代词，须结合上面最近一轮助手推荐的具体菜名来还原指代对象。
+- 若<用户消息>很短或隐含（如"那来点清淡的"），要结合上下文里刚提到的目标（如"上火了/想减肥/想吃虾"）补齐语义，再改写 search_query。
+- 已确认的忌口（上下文或已有偏好里明确不吃的东西）在 search_query 里不得出现。
 
 <当前状态>
 已推荐菜品: {self.recommended_recipes[-5:] if self.recommended_recipes else '无'}
@@ -1100,12 +1185,20 @@ class DialogManager:
 
 <search_query 改写>
 - search_query：把用户这次想吃的东西改写成一条可直接用于菜谱检索的中文关键词查询，让 RAG 找到最匹配的菜。
-  1) 口语/隐含愿望先转成语义相近的检索词。例："最近上火了，想下火" -> "下火 清热 降火 凉菜"；
-    "喉咙不舒服想吃润的" -> "润肺 滋阴 清淡 汤"；"想吃点刺激的过瘾" -> "辣 香辣 麻辣 川菜"。
+  1) 口语/隐含愿望先转成语义相近的检索词。例：
+    "最近上火了，想下火" -> "下火 清热 降火 凉菜"；
+    "喉咙不舒服想吃润的" -> "润肺 滋阴 清淡 汤"；
+    "想吃点刺激的过瘾" -> "辣 香辣 麻辣 川菜"；
+    "天气有点凉想吃热乎的" -> "炖菜 热汤 暖胃 砂锅"；
+    "这几天都失眠想喝点安神的" -> "安神 养心 汤 莲子 百合"；
+    "最近在减肥" -> "低脂 高蛋白 清蒸 凉拌"；
+    "感觉有点水肿" -> "利水 冬瓜 薏米 清淡"。
   2) 复合需求把核心食材/菜/风味关键词拼一起。例："清淡点还要蛋白质" -> "清淡 高蛋白 鸡胸 虾 蛋"。
   3) 按"想吃X/来份X"直接内容走。例："我想吃虾" -> "虾"。
   4) 用户只给约束没给方向（如纯"不吃鱼"）时 search_query 返回 null。
   5) 不包含用户明确忌口的词（用户不吃鱼时，别把"鱼"写进 search_query）。
+  6) 指代承接：消息里是"再来点那个""也要这种口味""把这道换成清淡的"等指代，
+     结合<最近对话上下文>最近一轮推荐，把指代对象还原成具体菜/口味关键词写进 search_query。
 - 结合"已推荐/已拒绝/已有偏好"判断：用户追加约束/换菜/确认时，search_query 应取这次新提到的内容；
   纯追加约束（没提想吃的东西）时返回 null。
 

@@ -386,6 +386,25 @@ html, body {
     font-size: 13px !important;
 }
 .chatbot-panel .bot .bubble p { margin: 8px 0 0 !important; color: #34342f !important; }
+/* ---- 营养概览小卡片（紧凑） ---- */
+.chatbot-panel .bot .bubble .nutrition-card {
+    display: inline-block !important;
+    background: #fafaf8 !important;
+    border: 1px solid var(--line) !important;
+    border-left: 3px solid var(--accent) !important;
+    border-radius: 8px !important;
+    padding: 4px 10px !important;
+    margin: 8px 0 2px !important;
+    font-size: 11.5px !important;
+    line-height: 1.5 !important;
+    color: #4a4a45 !important;
+    box-shadow: none !important;
+}
+.chatbot-panel .bot .bubble .nutrition-card .nut-title {
+    font-weight: 700 !important;
+    color: var(--ink) !important;
+    font-size: 11.5px !important;
+}
 
 /* ---- 输入区 ---- */
 .input-row {
@@ -481,7 +500,7 @@ class ChatSession:
                 # CSS 把 <ol><li> 渲染为菜品卡片：编号徽章 + 菜名 + 绿色标签 chip + mono 热量
                 dish = f"{i}. **{name}**"
                 if cals:
-                    dish += f"  **{cals} kcal**"
+                    dish += f"  **{ChatSession._format_calorie(cals)} kcal**"
                 if tags:
                     dish += "  " + "  ".join(f"`{t}`" for t in tags[:4])
                 lines.append(dish)
@@ -520,6 +539,42 @@ class ChatSession:
             lines.append("")
         return "\n".join(lines)
 
+    @staticmethod
+    def _format_calorie(cals) -> str:
+        """把卡路里归一化为干净的整数，如 250.0/250 -> '250'；空值返回 ''。"""
+        if cals in (None, "", 0):
+            return ""
+        try:
+            return str(int(float(cals)))
+        except (TypeError, ValueError):
+            return str(cals)
+
+    @staticmethod
+    def _embed_nutrition_card(md: str) -> str:
+        """把回复末尾的"营养概览"至少包成一张更紧凑的小卡片，避免整段大字撑得过大。"""
+        if '营养概览' not in md:
+            return md
+        lines = md.split('\n')
+        out = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if '营养概览' in line:
+                body = []
+                j = i + 1
+                while j < len(lines) and lines[j].strip() and not lines[j].strip().startswith('#'):
+                    body.append(lines[j].strip())
+                    j += 1
+                if body:
+                    content = '<br>'.join(body)
+                    out.append(f'<div class="nutrition-card"><span class="nut-title">营养概览</span><br>'
+                               f'<span class="nut-body">{content}</span></div>')
+                    i = j
+                    continue
+            out.append(line)
+            i += 1
+        return '\n'.join(out)
+
     def send_stream(self, message: str):
         """流式获取回复：推荐列表先出，回复文本随后逐段刷新（SSE）。
 
@@ -537,6 +592,8 @@ class ChatSession:
                 if resp.status_code != 200:
                     yield f"**[错误]** HTTP {resp.status_code}"
                     return
+                # 强制 UTF-8 解码 SSE，避免后端 text/event-stream 被 requests 按 Latin-1 解析成乱码
+                resp.encoding = 'utf-8'
                 for raw in resp.iter_lines(decode_unicode=True):
                     if not raw or not raw.startswith("data:"):
                         continue
@@ -575,7 +632,7 @@ class ChatSession:
                             if md:
                                 md += "\n\n"
                             md += f"> {full_resp}"
-                        yield md
+                        yield self._embed_nutrition_card(md)
         except requests.ConnectionError:
             yield "**[错误]** 无法连接后端服务，请先启动 `python app.py`"
         except Exception as e:
@@ -759,6 +816,9 @@ if __name__ == "__main__":
         pass
 
     try:
+        # 必须启用 queue，chat_fn 的生成器 yield 才会逐段流式上屏：
+        # 用户问题先显示（空助手气泡占位），随后推荐列表与回复文本逐段刷新。
+        demo.queue(default_concurrency_limit=8)
         demo.launch(
             server_name="127.0.0.1",
             server_port=7861,
