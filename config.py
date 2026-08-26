@@ -63,6 +63,10 @@ class Config:
     
     # FAISS向量索引配置
     FAISS_INDEX_PATH = project_root / "idx"
+
+    # sentence-transformers 模型缓存目录（本地离线下发/复用，避免每次都重新下载）
+    SBERT_CACHE_DIR = project_root / ".model_cache"
+    SBERT_ALLOW_CACHE = True
     
     # 数据文件路径
     RECIPES_JSON_PATH = project_root / "recipes_parsed.json"

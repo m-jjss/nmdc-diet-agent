@@ -158,7 +158,13 @@ class DialogManager:
         
         # 识别饮食偏好
         preference_keywords = {
-            'vegetarian': ['素食', '不吃肉', '素菜'],
+            # 素食：除"素食"外，覆盖"吃素/只吃素/纯素/全素"等口语表达
+            'vegetarian': ['素食', '不吃肉', '素菜', '吃素', '只吃素', '纯素', '全素',
+                           '都是素', '就想吃素', '别给我荤'],
+            # 想吃荤/肉：正向荤菜偏好
+            'meat': ['想吃肉', '吃肉', '想吃点肉', '想来点肉', '想吃荤', '想吃点荤',
+                     '来点肉', '要肉', '肉菜', '开荤', '无肉不欢', '想吃牛肉', '想吃鸡肉',
+                     '想吃排骨', '想吃烤鸭'],
             'low_fat': ['低脂', '少油', '清淡'],
             'low_spicy': ['不辣', '少辣', '微辣', '别做辣的', '不要辣', '别辣', '不吃辣', '别太辣', '不要太辣'],
             'low_sugar': ['低糖', '无糖', '别太甜', '不要太甜', '不要甜', '不吃甜', '不想吃甜的',
@@ -171,6 +177,12 @@ class DialogManager:
                 if keyword in message_lower:
                     extracted['preferences'][pref] = True
                     break
+        
+        # meat（想吃荤）与 vegetarian（吃素）互斥，避免同时命中
+        if extracted['preferences'].get('meat'):
+            extracted['preferences']['vegetarian'] = False
+        if extracted['preferences'].get('vegetarian'):
+            extracted['preferences']['meat'] = False
         
         # 额外：排除食材中含"辣的"也应触发 low_spicy
         if not extracted['preferences'].get('low_spicy'):
@@ -642,6 +654,8 @@ class DialogManager:
             filters['low_sugar'] = True
         if prefs.get('vegetarian'):
             filters['vegetarian'] = True
+        if prefs.get('meat'):
+            filters['meat'] = True
         
         # 健康目标 → 热量/脂肪/糖分限制
         # 如"减肥""减脂"应返回低卡低脂菜品，而不是红烧/油炸/高糖菜
@@ -1079,12 +1093,28 @@ class DialogManager:
 - low_sugar: true/false
 - vegetarian: true/false
 
+<偏好注意>
+- 凡表达拒绝/少吃某个食材都算忌口，写进 excluded_ingredients 或 allergies。委婉否定也要识别，
+  如"我不怎么吃海鲜""海鲜不太行""别放蒜""不要香菜" -> excluded_ingredients=["海鲜","蒜","香菜"]。
+- 一句话可能同时含多个条件（口味+忌口+餐次+人数），要全部提取，不只取第一个。
+
+<search_query 改写>
+- search_query：把用户这次想吃的东西改写成一条可直接用于菜谱检索的中文关键词查询，让 RAG 找到最匹配的菜。
+  1) 口语/隐含愿望先转成语义相近的检索词。例："最近上火了，想下火" -> "下火 清热 降火 凉菜"；
+    "喉咙不舒服想吃润的" -> "润肺 滋阴 清淡 汤"；"想吃点刺激的过瘾" -> "辣 香辣 麻辣 川菜"。
+  2) 复合需求把核心食材/菜/风味关键词拼一起。例："清淡点还要蛋白质" -> "清淡 高蛋白 鸡胸 虾 蛋"。
+  3) 按"想吃X/来份X"直接内容走。例："我想吃虾" -> "虾"。
+  4) 用户只给约束没给方向（如纯"不吃鱼"）时 search_query 返回 null。
+  5) 不包含用户明确忌口的词（用户不吃鱼时，别把"鱼"写进 search_query）。
+- 结合"已推荐/已拒绝/已有偏好"判断：用户追加约束/换菜/确认时，search_query 应取这次新提到的内容；
+  纯追加约束（没提想吃的东西）时返回 null。
+
 <输出格式>
 严格只返回一行JSON，不要markdown代码块:
-{{"intent":"xxx","preferences":{{}},"reasoning":"xxx"}}"""
+{{"intent":"xxx","preferences":{{}},"search_query":null,"reasoning":"xxx"}}"""
 
         try:
-            response = llm_client.chat([{'role': 'user', 'content': prompt}], temperature=0.1, max_tokens=300)
+            response = llm_client.chat([{'role': 'user', 'content': prompt}], temperature=0.1, max_tokens=450)
             response = response.strip()
             if response.startswith('```'):
                 lines_resp = response.split('\n')

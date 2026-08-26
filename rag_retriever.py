@@ -15,6 +15,22 @@ from config import Config
 from llm_client import get_llm_client
 
 
+def _faiss_index_dir() -> str:
+    """返回 FAISS 索引实际落盘目录。
+
+    faiss 的磁盘写用 C 层 fopen，在 Windows 上无法打开含非 ANSI（中文）字符的路径
+    （但 Python/pathlib 层可以）。因此当配置的索引目录含非 ASCII 字符时，回退到系统
+    临时目录并加项目标识（ASCII 可写路径），保证本机调试与演示环境下索引也能持久化。
+    保存与加载统一走本函数，保证读写路径一致。
+    """
+    path = str(Config.FAISS_INDEX_PATH)
+    if path.isascii():
+        return path
+    import tempfile
+    pid = hashlib.md5(path.encode('utf-8')).hexdigest()[:8]
+    return os.path.join(tempfile.gettempdir(), "nmdc_faiss_" + pid)
+
+
 class RAGRetriever:
     """
     RAG检索器类
@@ -244,14 +260,17 @@ class RAGRetriever:
             return
         
         try:
-            # 确保索引目录存在
-            os.makedirs(str(Config.FAISS_INDEX_PATH), exist_ok=True)
-            
-            # 保存FAISS索引
-            index_path = str(Config.FAISS_INDEX_PATH / "recipe_index.faiss")
-            faiss.write_index(self.index, index_path)
+            # 确保索引目录存在（含非 ASCII 路径时自动回退到 ASCII 临时目录）
+            _dir = _faiss_index_dir()
+            os.makedirs(_dir, exist_ok=True)
+
+            # 保存FAISS索引（serialize + Python bytes 写盘，天然支持中文路径，
+            # 避免 faiss C fopen 在 Windows 打开非 ANSI 路径失败）
+            index_path = os.path.join(_dir, "recipe_index.faiss")
+            with open(index_path, 'wb') as f:
+                f.write(faiss.serialize_index(self.index))
             print(f"FAISS索引已保存到: {index_path}")
-            
+
             # 保存菜谱映射关系（只保存名称和索引位置）
             map_data = []
             for i, recipe in enumerate(self.recipe_index_map):
@@ -260,8 +279,8 @@ class RAGRetriever:
                     'name': recipe.get('name', ''),
                     'hash': hashlib.md5(recipe.get('name', '').encode()).hexdigest()[:8]
                 })
-            
-            map_path = str(Config.FAISS_INDEX_PATH / "recipe_index_map.json")
+
+            map_path = os.path.join(_dir, "recipe_index_map.json")
             with open(map_path, 'w', encoding='utf-8') as f:
                 json.dump(map_data, f, ensure_ascii=False, indent=2)
             print(f"菜谱映射已保存到: {map_path}")
@@ -280,16 +299,19 @@ class RAGRetriever:
             False: 加载失败
         """
         try:
-            index_path = str(Config.FAISS_INDEX_PATH / "recipe_index.faiss")
-            map_path = str(Config.FAISS_INDEX_PATH / "recipe_index_map.json")
+            _dir = _faiss_index_dir()
+            index_path = os.path.join(_dir, "recipe_index.faiss")
+            map_path = os.path.join(_dir, "recipe_index_map.json")
             
             if not os.path.exists(index_path) or not os.path.exists(map_path):
                 return False
             
             print("正在从磁盘加载FAISS索引...")
-            
-            # 加载FAISS索引
-            self.index = faiss.read_index(index_path)
+
+            # 加载FAISS索引（Python bytes 读盘 + deserialize，兼容中文路径）
+            with open(index_path, 'rb') as f:
+                self.index = faiss.deserialize_index(
+                    np.frombuffer(f.read(), dtype=np.uint8))
             
             # 加载菜谱映射
             with open(map_path, 'r', encoding='utf-8') as f:
@@ -351,15 +373,14 @@ class RAGRetriever:
         # 重新排序（综合相似度和关键词匹配度）
         results = self._rerank(results, query)
         
-        # 关键词精确匹配候选：hash向量语义不可靠时，确保真正相关的菜优先进来
-        # （"虾"必须优先出虾的菜，而不是靠FAISS近邻随机凑数）
+        # 关键词精确匹配候选：确保真正相关的菜（"虾"）优先进来精确命中
         kw_results = self._simple_search(query, top_k=top_k * 2, filters=filters)
 
-        # 合并策略：
-        # 1) 关键词命中优先（相关性最强）
-        # 2) 数量不足时，用规则化兜底挑选（荤素搭配+烹饪多样+偏好过滤）补足，
-        #    而不是用哈希近邻随机凑数——哈希向量无语义，"今晚吃什么"会随机返回无关菜
-        # 3) 仅当规则化兜底仍不足时才退化到FAISS近邻
+        # 合并策略（语义 embedding 已启用后）
+        # 1) 关键词命中优先（相关性最强的精确匹配，如"虾"）
+        # 2) FAISS 语义近邻其次（能理解同义/口语表达，如"想吃点下饭的""清淡一点的晚餐"）
+        # 3) 仅当两者都不足时才退化到确定性规则兜底（"今晚吃什么"这类无指向查询）
+        #    —— 规则兜底不再提前用，避免语义有效的查询被固定菜单淹没
         merged, seen = [], set()
         for r in kw_results:
             name = r.get('name', '')
@@ -371,7 +392,7 @@ class RAGRetriever:
                 return merged
 
         if len(merged) < top_k:
-            for r in self._fallback_selection(filters, top_k):
+            for r in results:
                 name = r.get('name', '')
                 if name and name not in seen:
                     seen.add(name)
@@ -380,7 +401,7 @@ class RAGRetriever:
                     break
 
         if len(merged) < top_k:
-            for r in results:
+            for r in self._fallback_selection(filters, top_k):
                 name = r.get('name', '')
                 if name and name not in seen:
                     seen.add(name)
@@ -694,6 +715,25 @@ class RAGRetriever:
                 if any(p in ' '.join(self._safe_ingredients(r)) or
                        p in str(r.get('name', ''))
                        for p in protein_kws)
+            ]
+        
+        # 想吃荤/肉偏好：只保留含肉类的菜品（鱼等已在上游 exclude_ingredients 单独排除）
+        # 注意：用两字荤词，避免单字"鸡/鸭/鹅/鱼"误匹配"鸡蛋/鱼香茄子"等纯素菜
+        if filters.get('meat'):
+            meat_kws = ['猪肉', '牛肉', '羊肉', '鸡肉', '鸭肉', '鹅肉', '鱼肉',
+                        '虾', '蟹', '贝', '螺', '生蚝', '花蛤', '蛤蜊', '蛏', '扇贝',
+                        '排骨', '培根', '腊肉', '腊肠', '香肠', '火腿', '腊鸭',
+                        '鸡腿', '鸡翅', '鸡胸', '鸡胗', '鸡爪', '猪蹄', '猪肚', '猪肝',
+                        '牛腩', '牛百叶', '羊排', '五花肉', '肉末', '肉沫', '肉丝', '肉片',
+                        '红烧肉', '卤肉', '牛筋', '狮子头',
+                        '乳鸽', '牛蛙', '蛇', '鳗', '鱿鱼', '章鱼', '墨鱼',
+                        '带鱼', '鲈鱼', '鲫鱼', '三文鱼', '鳕鱼', '金枪鱼',
+                        '鸭血', '鹅肝', '牛', '猪', '肉']
+            filtered = [
+                r for r in filtered
+                if any(m in ' '.join(self._safe_ingredients(r)) or
+                       re.search(m, str(r.get('name', '')))
+                       for m in meat_kws)
             ]
         
         return filtered

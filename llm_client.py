@@ -2,7 +2,7 @@ import json
 import time
 import hashlib
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 try:
     import requests
@@ -10,6 +10,70 @@ except ImportError:
     requests = None
 
 from config import Config
+
+
+# ─────────────────────────────────────────────────────────────
+# 共享向量化：所有客户端统一"语义优先 + 哈希兜底"，避免某客户端用随机向量。
+# 默认 local 模式若用随机向量，FAISS 检索对所有 query 返回相同结果（agent"变笨"根因）。
+# ─────────────────────────────────────────────────────────────
+_SBERT_MODEL = None  # 全局单例，避免重复加载
+
+def _init_sbert():
+    """懒加载 sentence-transformers 模型（全局单例）。返回模型对象或 None/False。"""
+    global _SBERT_MODEL
+    if _SBERT_MODEL is not None:
+        return _SBERT_MODEL
+    try:
+        from sentence_transformers import SentenceTransformer
+        _SBERT_MODEL = SentenceTransformer(
+            Config.EMBEDDING_MODEL, device='cpu',
+            cache_folder=str(Config.SBERT_CACHE_DIR),
+        )
+        print(f"[OK] Embedding模型已加载: {Config.EMBEDDING_MODEL} (dim={Config.VECTOR_DIMENSION})")
+    except Exception as e:
+        print(f"[WARN] sentence-transformers不可用({e})，使用确定性哈希回退")
+        _SBERT_MODEL = False
+    return _SBERT_MODEL
+
+
+def _hash_embed(text: str, dim: int) -> List[float]:
+    """确定性字符 n-gram 哈希回退向量（同文同向量，非随机）。"""
+    text = text.lower().strip()
+    vec = [0.0] * dim
+    for i in range(len(text) - 1):
+        bg = text[i:i + 2]
+        h = int(hashlib.md5(bg.encode()).hexdigest(), 16) % dim
+        vec[h] += 1.0
+    for i in range(len(text) - 2):
+        tg = text[i:i + 3]
+        h = int(hashlib.md5(tg.encode()).hexdigest(), 16) % dim
+        vec[h] += 0.5
+    norm = sum(v * v for v in vec) ** 0.5
+    if norm > 0:
+        vec = [v / norm for v in vec]
+    return vec
+
+
+def _semantic_embed(text: str, dim: int) -> Optional[List[float]]:
+    """语义向量：sentence-transformers 优先，失败返回 None（调用方回退哈希）。"""
+    model = _init_sbert()
+    if model and model is not False:
+        try:
+            vec = model.encode(text, normalize_embeddings=True)
+            if len(vec) < dim:
+                vec = list(vec) + [0.0] * (dim - len(vec))
+            return list(vec[:dim])
+        except Exception:
+            return None
+    return None
+
+
+def smart_embed(text: str, dim: int) -> List[float]:
+    """通用向量化：语义优先 + 哈希兜底。所有客户端统一走这里。"""
+    vec = _semantic_embed(text, dim)
+    if vec is not None:
+        return vec
+    return _hash_embed(text, dim)
 
 
 class LLMClient(ABC):
@@ -105,31 +169,18 @@ class LocalLLMClient(LLMClient):
     
     def embed(self, text: str) -> List[float]:
         """
-        本地文本向量化（模拟）
-        
-        基于文本hash生成确定性的随机向量，保证相同文本每次生成相同向量。
-        
+        本地文本向量化
+
+        使用语义模型（sentence-transformers）+ 哈希回退，而非随机向量。
+        语义模型不可用时回退到确定性字符 n-gram 哈希，保证检索对同义/相关表达稳定有意义。
+
         Args:
             text: 待向量化的文本
-            
+
         Returns:
-            1024维的随机向量，范围[-1, 1]
+            Config.VECTOR_DIMENSION 维向量
         """
-        # 计算缓存键，添加_emb后缀区分对话缓存
-        cache_key = hashlib.md5(text.encode()).hexdigest()
-        if cache_key + '_emb' in self.cache:
-            return self.cache[cache_key + '_emb']
-        
-        # 使用hash值作为随机种子，保证确定性
-        import random
-        random.seed(int(cache_key, 16))
-        
-        # 生成指定维度的随机向量，范围[-1, 1]
-        embedding = [random.random() * 2 - 1 for _ in range(Config.VECTOR_DIMENSION)]
-        
-        # 缓存向量结果
-        self.cache[cache_key + '_emb'] = embedding
-        return embedding
+        return smart_embed(text, Config.VECTOR_DIMENSION)
     
     def chat_with_tools(self, messages: List[Dict], tools: List[Dict] = None,
                         temperature: float = 0.1, max_tokens: int = 500) -> Dict:
@@ -695,15 +746,12 @@ class DeepSeekClient(LLMClient):
                 'finish_reason': 'error'
             }
 
-    # 全局缓存：避免重复加载模型
-    _sbert_model = None
-
     def embed(self, text: str) -> List[float]:
         """
         DeepSeek文本向量化
 
         优先使用sentence-transformers本地模型（免费、高质量），
-        不可用时回退到确定性字符n-gram哈希。
+        不可用时回退到确定性字符n-gram哈希（同文同向量，非随机）。
 
         Args:
             text: 待向量化的文本
@@ -711,44 +759,11 @@ class DeepSeekClient(LLMClient):
         Returns:
             向量 (维度由 Config.VECTOR_DIMENSION 决定)
         """
-        dim = self.embed_dim
-
-        # 尝试使用 sentence-transformers
-        if DeepSeekClient._sbert_model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-                model_name = self.embed_model
-                DeepSeekClient._sbert_model = SentenceTransformer(model_name, device='cpu')
-                print(f"[OK] Embedding模型已加载: {model_name} (dim={dim})")
-            except Exception as e:
-                print(f"[WARN] sentence-transformers不可用({e})，使用确定性哈希回退")
-                DeepSeekClient._sbert_model = False  # 标记为不可用
-
-        if DeepSeekClient._sbert_model and DeepSeekClient._sbert_model is not False:
-            try:
-                vec = DeepSeekClient._sbert_model.encode(text, normalize_embeddings=True)
-                if len(vec) < dim:
-                    vec = list(vec) + [0.0] * (dim - len(vec))
-                return list(vec[:dim])
-            except Exception:
-                pass
-
-        # 回退：确定性字符n-gram哈希（非随机，同文同向量）
-        import hashlib
-        text = text.lower().strip()
-        vec = [0.0] * dim
-        for i in range(len(text) - 1):
-            bg = text[i:i+2]
-            h = int(hashlib.md5(bg.encode()).hexdigest(), 16) % dim
-            vec[h] += 1.0
-        for i in range(len(text) - 2):
-            tg = text[i:i+3]
-            h = int(hashlib.md5(tg.encode()).hexdigest(), 16) % dim
-            vec[h] += 0.5
-        norm = sum(v * v for v in vec) ** 0.5
-        if norm > 0:
-            vec = [v / norm for v in vec]
-        return vec
+        # 统一走 smart_embed：语义优先 + 哈希兜底（与 local 模式一致）
+        vec = _semantic_embed(text, self.embed_dim)
+        if vec is not None:
+            return vec
+        return _hash_embed(text, self.embed_dim)
 
 
 def get_llm_client(provider: str = None) -> LLMClient:
