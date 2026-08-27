@@ -36,7 +36,9 @@ class DialogManager:
             'servings': None,             # 用餐人数
             'meal_type': None,            # 餐次：早餐/午餐/晚餐/夜宵
             'cuisine_preference': None,   # 菜系偏好
-            'difficulty': None            # 制作难度：简单/中等/复杂
+            'difficulty': None,            # 制作难度：简单/中等/复杂
+            'cooking_method': None,        # 偏好烹饪方式：炸/烤/蒸/炖/炒/煎/煮等
+            'special_groups': []           # 特殊人群：儿童/老人/孕妇/哺乳期/备孕等（硬约束）
         }
         
         # 当前对话状态
@@ -124,10 +126,36 @@ class DialogManager:
             'servings': None,
             'meal_type': None,
             'cuisine_preference': None,
-            'difficulty': None
+            'difficulty': None,
+            'cooking_method': None,
+            'special_groups': []
         }
         
         message_lower = user_message.lower()
+        
+        # 识别特殊人群（给谁吃 / 谁不能吃）——儿童/老人/孕妇/哺乳期/备孕等
+        # 句式：给老人做的、适合小孩吃、有没有孕妇不能吃的、家里有小朋友、孕妇餐……
+        # 命中"人群词"且满足任一激活条件（lead 词 / 消息较短）才识别，
+        # 避免"不辣"里的"不"、泛指"想吃肉"里的"肉"误触发。
+        group_map = {
+            '儿童': ['儿童', '小孩', '孩子', '小朋友', '宝宝', '小孩子', '幼儿', '小朋友'],
+            '老人': ['老人', '老年人', '长辈', '父母', '爷爷奶奶', '外公外婆', '家里老人', '老年'],
+            '孕妇': ['孕妇', '怀孕', '孕', '孕期', '准妈妈', '胎'],
+            '哺乳期': ['哺乳', '喂奶', '产后', '产妇', '哺乳期'],
+            '备孕': ['备孕', '备孕中', '备孕期间'],
+        }
+        for group, kws in group_map.items():
+            for k in kws:
+                if k not in message_lower:
+                    continue
+                # 激活条件：前有明显"给谁吃"的 lead 词，或消息本身很短（直接点名人群点菜）
+                idx = message_lower.find(k)
+                prefix = message_lower[max(0, idx - 4):idx]
+                activated = bool(re.search(r'(给|为|适合|推荐|帮|做|买|有|要|想|来|喝|补|营养|照顾|的|餐|饭)', prefix)) \
+                    or (len(message_lower) <= 12 and group in message_lower)
+                if activated and group not in extracted['special_groups']:
+                    extracted['special_groups'].append(group)
+                break
         
         # 识别过敏信息
         allergy_keywords = {
@@ -212,9 +240,10 @@ class DialogManager:
             if '甜' not in i and '辣' not in i
         ]
         
-        # 正向辣味需求：说"刺激/过瘾/重口/想吃辣"是想要辣（而非不要辣）
+        # 正向辣味需求：说"刺激/过瘾/重口/想吃辣"是想要辣（而非不要辣）。
+        # 注意："下饭"只是配饭/有滋味，不等于辣，不能算想要辣
         spicy_want_keywords = ['刺激', '过瘾', '重口味', '重口', '口味重', '想吃辣', '来点辣', '要辣',
-                               '够味', '带劲', '下饭']
+                               '够味', '带劲']
         if any(k in message_lower for k in spicy_want_keywords):
             if not re.search(r'(不要|不吃|别|不想要|不想吃).*(辣|刺激|重口|过瘾)', message_lower):
                 extracted['preferences']['low_spicy'] = False
@@ -226,7 +255,9 @@ class DialogManager:
             '增肌': ['增肌', '健身', '高蛋白'],
             '养生': ['养生', '健康', '滋补', '补气血', '补气', '补血'],
             '控糖': ['控糖', '糖尿病'],
-            '暖胃': ['暖胃', '养胃', '胃不好']
+            '暖胃': ['暖胃', '养胃', '胃不好', '养肠胃'],
+            '降火': ['降火', '去火', '下火', '上火', '清热', '败火', '清火'],
+            '开胃': ['开胃', '没胃口', '胃口不好', '食欲不振', '食欲']
         }
         
         for goal, keywords in goal_keywords.items():
@@ -299,6 +330,20 @@ class DialogManager:
             if not re.search(r'(不要|不吃|别|不想要|不想吃).*(辣|刺激|重口|过瘾)', message_lower):
                 extracted['cuisine_preference'] = '川菜'
         
+        # 识别偏好烹饪方式（"有没有炸的/来点烤的/想吃炖的"）：仅在明确要求某烹饪方式时匹配。
+        # 用"烹饪方式+的/了"作为锚点（来点炸的/有没有烤的/想吃炖的），
+        # 避免"炒饭/蒸鱼/炸鸡"等菜名（后不跟"的"）把整段会话锁死在单一生产方式。
+        method_order = ['炸', '烤', '蒸', '炖', '炒', '煎', '煮', '凉拌', '烧', '焖', '煲']
+        neg_method = re.search(r'(不要|不吃|别|不想要|不想吃|少).*(炸|烤|蒸|炖|炒|煎|煮|凉拌|油炸)', message_lower)
+        if not neg_method:
+            m_match = re.findall(r'(凉拌|油炸|[炸烤蒸炖炒煎煮烧焖煲])[的的了]', message_lower)
+            if m_match:
+                cands = ['炸' if c == '油炸' else c for c in m_match]
+                for m in method_order:  # 按优先级取最想吃的生产方式
+                    if m in cands:
+                        extracted['cooking_method'] = m
+                        break
+
         # 更新用户偏好
         self._update_preferences(extracted)
         
@@ -351,6 +396,15 @@ class DialogManager:
         # 更新制作难度（覆盖）
         if new_preferences.get('difficulty') is not None:
             self.user_preferences['difficulty'] = new_preferences['difficulty']
+        
+        # 更新偏好烹饪方式（覆盖）
+        if new_preferences.get('cooking_method') is not None:
+            self.user_preferences['cooking_method'] = new_preferences['cooking_method']
+        
+        # 合并特殊人群（追加，不覆盖）
+        for g in new_preferences.get('special_groups', []):
+            if g not in self.user_preferences['special_groups']:
+                self.user_preferences['special_groups'].append(g)
     
     def _detect_intent_keyword(self, user_message: str) -> str:
         """
@@ -600,6 +654,8 @@ class DialogManager:
             'meal_type': self.user_preferences['meal_type'],
             'cuisine_preference': self.user_preferences['cuisine_preference'],
             'difficulty': self.user_preferences['difficulty'],
+            'cooking_method': self.user_preferences['cooking_method'],
+            'special_groups': self.user_preferences['special_groups'],
             'dialog_turns': self.turn_count,
             'rejected_recipes': self.rejected_recipes
         }
@@ -688,6 +744,10 @@ class DialogManager:
         if self.user_preferences.get('cooking_time_limit'):
             filters['max_cooking_time'] = self.user_preferences['cooking_time_limit']
         
+        # 偏好烹饪方式（"有没有炸的/来点烤的"）
+        if self.user_preferences.get('cooking_method'):
+            filters['preferred_method'] = self.user_preferences['cooking_method']
+        
         # 用餐人数
         if self.user_preferences.get('servings'):
             filters['servings'] = self.user_preferences['servings']
@@ -695,6 +755,10 @@ class DialogManager:
         # 餐次
         if self.user_preferences.get('meal_type'):
             filters['meal_type'] = self.user_preferences['meal_type']
+        
+        # 特殊人群（儿童/老人/孕妇/哺乳期/备孕）——硬约束，供检索层初筛
+        if self.user_preferences.get('special_groups'):
+            filters['special_groups'] = self.user_preferences['special_groups'].copy()
         
         return filters
     
@@ -892,7 +956,8 @@ class DialogManager:
             'servings': None,
             'meal_type': None,
             'cuisine_preference': None,
-            'difficulty': None
+            'difficulty': None,
+            'cooking_method': None
         }
         self.dialog_state = 'initial'
         self.turn_count = 0

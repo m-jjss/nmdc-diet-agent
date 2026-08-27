@@ -384,8 +384,17 @@ _JUNK_EXCLUDES = {'了', '的', '点', '些', '它', '吧', '啊', '呀', '嘛',
                  '这些', '那些', '一点', '太多', '太', '顿', '餐'}
 
 # 口语化"想吃刺激/重口" → 改写为可检索的辣味关键词（避免"刺激"搜不到菜）
-_SPICY_WANT_TERMS = ['刺激', '过瘾', '重口', '重口味', '口味重', '够味', '带劲', '下饭']
+# 注意："下饭"只是"配饭/有滋味"，不等于辣，已从辣味词中剔除，归入隐含语义词典
+_SPICY_WANT_TERMS = ['刺激', '过瘾', '重口', '重口味', '口味重', '够味', '带劲']
 _SPICY_SEARCH_QUERY = '辣 麻辣 香辣 辣椒 剁椒 川菜 湘菜 辛辣'
+
+# 隐含语义词典：口语隐含愿望 → 可检索关键词（下饭≠辣、降火≠甜、开胃/养胃各归其位）
+_IMPLICIT_SEMANTIC = [
+    (('下饭', '下饭菜', '很下饭', '配饭'), '咸香 开胃 下饭 家常菜 浓油赤酱 红烧'),
+    (('降火', '去火', '下火', '上火', '清热', '败火', '清火'), '清热 降火 凉性 清淡 冬瓜 绿豆 苦瓜 凉菜'),
+    (('开胃', '没胃口', '胃口不好', '食欲不振', '食欲'), '开胃 酸 清爽 山楂 凉拌 番茄 酸辣'),
+    (('养胃', '暖胃', '胃不好', '养肠胃'), '养胃 暖胃 温和 易消化 粥 汤 山药 小米'),
+]
 
 
 def _clean_search_query(query: str) -> tuple:
@@ -453,10 +462,16 @@ def _clean_search_query(query: str) -> tuple:
     # 口味语义改写：把"刺激/过瘾/重口"等口语口味词改写为辣味可检索词，
     # 避免"我想吃点刺激的" -> 检索词"刺激"搜不到任何菜而退化为清淡推荐
     if core and len(core) <= 8:
-        for _t in _SPICY_WANT_TERMS:
-            if _t in core:
-                core = _SPICY_SEARCH_QUERY
+        # 隐含语义词典优先："下饭/降火/开胃/养胃"各映射到正确检索词（下饭≠辣、降火≠甜）
+        for terms, rewrite in _IMPLICIT_SEMANTIC:
+            if any(_t in core for _t in terms):
+                core = rewrite
                 break
+        else:
+            for _t in _SPICY_WANT_TERMS:
+                if _t in core:
+                    core = _SPICY_SEARCH_QUERY
+                    break
 
     # 去重（保持顺序）
     seen = set()
@@ -1092,25 +1107,44 @@ def _is_meat_recipe(recipe: dict) -> bool:
     同时检查菜名与食材文本，覆盖"清蒸海蛎子""姜辣凤爪""家常麻辣香锅"等
     菜名不含"肉/鱼/虾/蟹"字眼但实际是荤菜的条目。
 
+    注意：单字"肉"必须排除植物果肉（龙眼肉/果肉/椰肉/瓜肉等），
+    否则"滋补养生梨（龙眼肉）"这类素甜品会被误判为荤菜。
+
     Args:
         recipe: 菜谱数据（需含 name，可选 ingredients）
 
     Returns:
         True 表示荤菜，False 表示素菜
     """
-    MEAT_KWS = ['肉', '鸡', '鸭', '鱼', '虾', '蟹', '贝', '牛', '猪', '羊', '鹅', '驴',
+    import re as _re
+    MEAT_KWS = ['肉排', '鸡', '鸭', '鱼', '虾', '蟹', '牛', '猪', '羊', '鹅', '驴',
                 '鸽', '鹌', '鳅', '龟', '鳖', '兔', '蛇',
-                '排骨', '香肠', '腊', '腿', '翅', '肝', '腰', '脑', '鲍', '参', '蛤', '鱿',
-                '鳗', '蚝', '蛎', '螺', '蚌', '爪', '掌', '蹄', '肘', '肚', '舌', '腩',
+                '排骨', '香肠', '腊', '腿', '翅', '肝', '腰', '脑', '鲍', '蛤', '鱿',
+                '鳗', '蛎', '螺', '蚌', '爪', '掌', '蹄', '肘', '肚', '舌', '腩',
                 '鲈', '鳕', '鲢', '鲫', '鲤', '鳝', '蛙', '烤鸭', '火腿', '培根',
-                '凤爪', '鸡爪', '鸭掌', '猪蹄', '牛筋']
+                '凤爪', '鸡爪', '鸭掌', '猪蹄', '牛筋', '生蚝', '海参',
+                '海米', '虾米', '虾皮', '金钩', '干贝', '瑶柱']
+    # 荤字主正则（去掉裸"肉"，由下面的专项正则处理；动物单字如"鸡/鱼"仍能覆盖鸡肉、鱼肉等）
+    _main_rx = _re.compile('|'.join(_re.escape(k) for k in MEAT_KWS))
+    # 专项"肉"：紧前非植物果肉字符才算荤（羊/牛/烧/回锅/叉烧…后面的肉是真的；
+    # 龙眼肉/果肉/椰肉/瓜肉/芋肉等则是植物果肉）
+    _meat_rx = _re.compile(r'(?<![果椰瓜芋榴荔桂眼参])肉')
+    # 调味料/蛋奶素/植物果肉词：先剔除再匹配，避免"鸡精/猪油/蚝油/鸡蛋/牛奶/榴莲肉/肉桂"
+    # 把素菜或甜点误判为荤菜。
+    # （素菜也常放猪油炒、加鸡精/蚝油提鲜；鸡蛋/牛奶/奶油属蛋奶素；榴莲肉/枣肉/肉桂是植物）
+    _seasoning_rx = _re.compile(
+        r'鸡精|味精|猪油|蚝油|生抽|老抽|酱油|食用油|植物油|玉米油'
+        r'|色拉油|花生油|调和油|芝麻油|香油|鸡蛋|鸭蛋|鹌鹑蛋|鹅蛋|蛋液|蛋黄|蛋清'
+        r'|牛奶|纯牛奶|鲜牛奶|淡奶油|炼乳|酸奶|奶酪|芝士|黄油|奶油|椰奶|羊奶'
+        r'|榴莲肉|大枣肉|枣肉|果肉|椰肉|瓜肉|芋肉|龙眼肉|桂圆肉|荔枝肉|肉桂')
     text = recipe.get('name', '') or ''
     ing = recipe.get('ingredients', '')
     if isinstance(ing, str):
         text += ' ' + ing
     elif isinstance(ing, list):
         text += ' ' + ' '.join(str(i) for i in ing)
-    return any(k in text for k in MEAT_KWS)
+    text = _seasoning_rx.sub(' ', text)
+    return bool(_main_rx.search(text)) or bool(_meat_rx.search(text))
 
 
 def _trim_by_relevance(recommendations: list, core_query: str, retriever, max_n: int = 5,
@@ -1451,16 +1485,9 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
         print(f"[Agent] 补齐后: {len(recommendations)}道")
 
     # — 保底荤素：全荤无素时替换1-2道为素菜 —
-    MEAT_KWS = ['肉', '鸡', '鸭', '鱼', '虾', '蟹', '贝', '牛', '猪', '羊', '排骨',
-                '腊', '肠', '腿', '翅', '肝', '腰', '脑', '鲍', '参', '蛤', '鱿',
-                '鳗', '蚝', '烤鸭', '火腿', '培根']
-    VEG_KWS = ['菜', '豆', '腐', '菇', '茄', '瓜', '薯', '藕', '芹', '笋', '莲',
-               '葱', '蒜', '姜', '椒', '花', '米', '面', '粉', '饼', '包', '馒', '粥']
-    
+    # 荤素判定复用统一的 _is_meat_recipe（已剔除鸡精/猪油/蚝油/鸡蛋等调味·蛋奶素误判）
     if len(recommendations) >= 3:
-        meat_count = sum(1 for r in recommendations
-                         if any(kw in r.get('name','') + r.get('ingredients','') 
-                                for kw in MEAT_KWS))
+        meat_count = sum(1 for r in recommendations if _is_meat_recipe(r))
         veg_count = len(recommendations) - meat_count
         if meat_count == len(recommendations):  # 全荤无素
             print(f"[Agent] 全荤无素({meat_count}荤/{veg_count}素)，自动搜索素菜...")
@@ -1963,6 +1990,32 @@ _register_dialog_agents()
 print(ORCHESTRATOR.describe())
 
 
+def _sync_special_groups_to_engine(dm, engine, user_id, user_ids):
+    """把对话管理器中本轮提取的特殊人群（孕妇/老人/儿童/哺乳期/备孕）同步进约束引擎用户档案。
+
+    约束引擎的 filter_by_constraints 与 result_verifier 只从 engine.user_profiles 读硬约束，
+    若不同步，用户在多轮对话中临时说"给老人做的"不会被过滤。
+    """
+    if not dm:
+        return
+    groups = list(dm.user_preferences.get('special_groups', []) or [])
+    if not groups:
+        return
+    targets = []
+    if user_ids:
+        targets = [uid for uid in user_ids if str(uid).isdigit() and 1 <= int(uid) <= 50]
+    elif user_id and str(user_id).isdigit() and 1 <= int(user_id) <= 50:
+        targets = [str(user_id)]
+    for uid in targets:
+        profile = engine.user_profiles.get(uid)
+        if not profile:
+            continue
+        cur = profile.setdefault('special_groups', [])
+        for g in groups:
+            if g not in cur:
+                cur.append(g)
+
+
 @app.route('/api/dialog', methods=['POST'])
 def dialog():
     """
@@ -2111,6 +2164,9 @@ def dialog():
             print(f"[agent] 未注册意图 '{intent}'，回退到检索·推荐 Agent")
             intent = 'recommend'
 
+        # 将本轮提取的特殊人群同步进约束引擎档案，保证 filter_by_constraints / 验证生效
+        _sync_special_groups_to_engine(dm, engine, user_id, user_ids)
+
         ctx = DialogContext(
             dm=dm, retriever=retriever, engine=engine, llm=llm,
             message=message, user_id=user_id, user_ids=user_ids,
@@ -2145,11 +2201,13 @@ def dialog():
                 verify_profile['diseases'] = list(set(verify_profile['diseases']))
                 verify_profile['special_groups'] = list(set(verify_profile['special_groups']))
             else:
-                # 非预置用户：从对话偏好中获取过敏信息，并合并明确"不吃"的食材（同样视为硬约束）
+                # 非预置用户：从对话偏好中获取过敏信息，并合并明确"不吃"的食材与特殊人群（同样视为硬约束）
                 verify_profile['allergies'] = list(set(
                     dm.user_preferences.get('allergies', []) +
                     dm.user_preferences.get('excluded_ingredients', [])
                 ))
+                verify_profile['special_groups'] = list(
+                    dm.user_preferences.get('special_groups', []) or [])
             verification_report = verifier.verify(recommendations, verify_profile)
             # 硬约束违规：从推荐列表中移除违规菜品并提示用户
             if not verification_report['all_passed']:
@@ -2412,6 +2470,8 @@ def dialog_stream():
         
         def generate():
             t_start = time.perf_counter()
+            # 将本轮提取的特殊人群同步进约束引擎档案，保证 filter_by_constraints 生效
+            _sync_special_groups_to_engine(dm, engine, user_id, user_ids)
             filters = dm.get_search_filters()
             core, neg_ex = _clean_search_query(message)
             if neg_ex:

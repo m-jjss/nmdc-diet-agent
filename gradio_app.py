@@ -433,6 +433,68 @@ html, body {
 # 后端通信
 # ============================================================
 
+# 生成回答时自动滚到底部：用 MutationObserver 监听对话区，
+# 每当新增气泡/文本变化就把最后一条消息滚入视口，同时把所有可滚动的内部滚动容器滚平。
+# 兼容不同 Gradio 版本的 DOM 结构：先在面板内找"真正的滚动容器"（scrollHeight > clientHeight
+# 且 overflow 为 auto/scroll），再滚动它；同时把最后一条消息 scrollIntoView。
+AUTO_SCROLL_JS = """
+function setupChatAutoScroll() {
+  var panel = document.querySelector('.chatbot-panel, [data-testid="chatbot"], .chatbot');
+  if (!panel) return;
+  if (panel.__autoScroll) return;
+  panel.__autoScroll = true;
+
+  var win = window;
+  // 找出面板内所有真实可滚动的滚动容器（排除 body/视口）
+  function findScrollContainers(root) {
+    if (!root.getElementsByTagName) return [];
+    var els = root.querySelectorAll('*');
+    var out = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el === document.body || el === document.documentElement) continue;
+      if (el.scrollHeight > el.clientHeight + 2) {
+        var cs = win.getComputedStyle(el, null);
+        var oy = cs ? cs.overflowY : '';
+        if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
+          out.push(el);
+        }
+      }
+    }
+    return out;
+  }
+
+  function scrollToBottom() {
+    try {
+      // 1) 把面板内每个滚动容器滚平
+      var containers = findScrollContainers(panel);
+      for (var i = 0; i < containers.length; i++) {
+        containers[i].scrollTop = containers[i].scrollHeight;
+      }
+      // 2) 最后一条消息滚入视口（兜底，覆盖未被子查询命中的容器）
+      var rows = panel.querySelectorAll('.message-row, .message-wrap, .bot_message, .user_message');
+      var last = rows[rows.length - 1];
+      if (last) {
+        last.scrollIntoView({ block: 'end', behavior: 'auto' });
+      } else {
+        panel.scrollTop = panel.scrollHeight;
+      }
+    } catch (e) {}
+  }
+
+  var mo = new MutationObserver(function () {
+    win.requestAnimationFrame(scrollToBottom);
+  });
+  mo.observe(panel, { childList: true, subtree: true, characterData: true });
+  scrollToBottom();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', setupChatAutoScroll);
+} else {
+  setupChatAutoScroll();
+}
+"""
+
 
 class ChatSession:
     """管理单个用户的对话会话"""
@@ -825,6 +887,7 @@ if __name__ == "__main__":
             share=False,
             show_error=True,
             css=CUSTOM_CSS,
+            js=AUTO_SCROLL_JS,
         )
     except Exception as e:
         print(f"\n启动失败: {e}")
