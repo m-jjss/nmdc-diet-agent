@@ -21,6 +21,7 @@ Thumbs.db
 
 instance/
 .cache/
+.hf_cache/
 
 *.egg-info/
 .installed.cfg

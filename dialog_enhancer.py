@@ -655,7 +655,7 @@ class DialogManager:
             'cuisine_preference': self.user_preferences['cuisine_preference'],
             'difficulty': self.user_preferences['difficulty'],
             'cooking_method': self.user_preferences['cooking_method'],
-            'special_groups': self.user_preferences['special_groups'],
+            'special_groups': self.user_preferences.get('special_groups', []),
             'dialog_turns': self.turn_count,
             'rejected_recipes': self.rejected_recipes
         }
