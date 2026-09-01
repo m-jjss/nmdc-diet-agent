@@ -1845,6 +1845,27 @@ def _handler_vague(ctx: DialogContext):
     dm, retriever, engine = ctx.dm, ctx.retriever, ctx.engine
     message, user_id, user_ids = ctx.message, ctx.user_id, ctx.user_ids
 
+    # 能力边界引导：识别明显与膳食无关的请求（天气/写诗/玩笑/闲聊/其它领域问题）。
+    # 这类问题不应强行推荐菜，而是友好地说明能力边界并引导回正题。
+    _offtopic = re.search(
+        r'天气|气温|降温|升温|下雨|下雪|台风|雷雨|多云|阴天|晴天|适不适合吃|适合吃什么'
+        r'|写诗|写一[首篇]|作诗|讲个笑话|笑话|唱个歌|唱歌|翻译|英语|英文'
+        r'|新闻|时间|几点了|现在几点|多少钱|几点钟',
+        message)
+    if _offtopic:
+        _kw = _offtopic.group(0)
+        if '适不适合' in message or '适合' in message:
+            ctx.response_text = (
+                f"我是膳食规划助手，主要帮你搭配菜品和营养方案～关于「{message}」"
+                f"，我没法判断外面的天气情况，但如果你想吃火锅这类暖身菜，"
+                f"我可以直接帮你推荐合适的搭配哦。")
+        else:
+            ctx.response_text = (
+                f"这个我暂时帮不上忙呢～我是一名膳食规划助手，专注菜品推荐、"
+                f"营养搭配和多人配餐。如果你想吃的方面，随时告诉我，比如「天冷了想吃点暖身的」「想吃火锅」～")
+        ctx.recommendations = []
+        return
+
     if dm.recommended_recipes:
         recipe_names = dm.recommended_recipes[-5:]
         ctx.response_text = f"这几道还合胃口吗？先给你留着：{', '.join(recipe_names)}。想换随时说～"
@@ -2409,9 +2430,13 @@ def dialog_stream():
                     and re.search(r'(详细|讲讲|说说|具体|继续|再来|再讲|好|嗯|可以|要)', message))):
             intent = 'ask_recipe_detail'
 
-        # 专职 Agent 文本意图（菜谱详情/营养等）：不进入推荐 generate，直接 dispatch 生成回复，
-        # 保证 Gradio 流式接口也能正确响应"怎么做X"这类询问。
-        if intent in ('ask_recipe_detail', 'ask_nutrition') and ORCHESTRATOR.has_handler(intent):
+        # 专职 Agent 文本意图（菜谱详情/营养/简单交互等）：不进入推荐 generate，直接 dispatch 生成回复，
+        # 保证 Gradio 流式接口也能正确响应"怎么做X"这类询问，以及"你好/谢谢/再见/模糊询问"
+        # 这类交互话术——否则 greet/cancel/vague_query 会被误当成推荐请求返回一堆无关菜。
+        _interactive_intents = ('ask_recipe_detail', 'ask_nutrition',
+                                'greet', 'confirm', 'cancel', 'vague_query',
+                                'reject_recommendation', 'request_substitute', 'request_more')
+        if intent in _interactive_intents and ORCHESTRATOR.has_handler(intent):
             _ctx = DialogContext(
                 dm=dm, retriever=retriever, engine=engine, llm=llm,
                 message=message, user_id=user_id, user_ids=user_ids,
