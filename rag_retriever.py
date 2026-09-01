@@ -362,6 +362,11 @@ class RAGRetriever:
         try:
             import os as _os
             _os.environ.setdefault('HF_HUB_OFFLINE', '1')  # 竞赛演示环境离线优先，避免网络阻塞
+            try:
+                import torch as _torch
+                _torch.set_num_threads(4)  # 限制推理线程，防止高频评测下 OMP 线程耗尽崩溃
+            except ImportError:
+                pass
             from sentence_transformers import CrossEncoder
             self._cross_encoder = CrossEncoder(self._CE_MODEL_NAME, max_length=128)
             self._ce_state = 'ready'

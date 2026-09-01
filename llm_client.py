@@ -26,6 +26,11 @@ def _init_sbert():
     try:
         from sentence_transformers import SentenceTransformer
         try:
+            import torch
+            torch.set_num_threads(4)  # 限制推理线程，防止高频评测下 OMP 线程耗尽崩溃
+        except ImportError:
+            pass
+        try:
             _SBERT_MODEL = SentenceTransformer(
                 Config.EMBEDDING_MODEL, device='cpu',
                 cache_folder=str(Config.SBERT_CACHE_DIR),

@@ -365,7 +365,13 @@ class DialogManager:
                 self.user_preferences['allergies'].append(allergy)
         
         # 合并偏好设置（覆盖更新）
-        self.user_preferences['preferences'].update(new_preferences.get('preferences', {}))
+        # vegetarian 单向保护：已声明的素食标记不因单条"想吃红烧肉"被覆盖清除，
+        # 只有用户明确说"不再吃素/恢复吃肉"才允许解除（由下方显式解除逻辑处理）。
+        _new_prefs = dict(new_preferences.get('preferences', {}))
+        if (self.user_preferences['preferences'].get('vegetarian')
+                and _new_prefs.get('vegetarian') is False):
+            _new_prefs.pop('vegetarian', None)
+        self.user_preferences['preferences'].update(_new_prefs)
         
         # 合并膳食目标（追加）
         for goal in new_preferences.get('dietary_goals', []):

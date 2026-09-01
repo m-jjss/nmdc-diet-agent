@@ -54,12 +54,15 @@ class Config:
     # 模型来源 (默认 sentence-transformers 本地模型，免费、离线)
     EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "sentence-transformers")
     # 本地模型名 (支持 huggingface 上任何 sentence-transformers 模型)
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+    # 默认采用中文语义模型 bge-small-zh-v1.5（512维），中文检索精度优于多语言 MiniLM。
+    # 若希望覆盖，通过环境变量/`.env` 指定 EMBEDDING_MODEL 与 VECTOR_DIMENSION 即可。
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
     # 向量维度 (必须与所选模型输出维度一致)
-    #   MiniLM-L12-v2 → 384
+    #   BAAI/bge-small-zh-v1.5 → 512
+    #   paraphrase-multilingual-MiniLM-L12-v2 → 384
     #   distiluse-base-multilingual-cased-v2 → 512
     #   paraphrase-multilingual-mpnet-base-v2 → 768
-    VECTOR_DIMENSION = int(os.getenv("VECTOR_DIMENSION", "384"))
+    VECTOR_DIMENSION = int(os.getenv("VECTOR_DIMENSION", "512"))
     
     # FAISS向量索引配置
     FAISS_INDEX_PATH = project_root / "idx"
