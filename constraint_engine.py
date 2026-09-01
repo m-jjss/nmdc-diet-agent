@@ -97,7 +97,18 @@ class ConstraintEngine:
                 '营养需求': {'protein': 'high', 'calcium': 'high', 'iron': 'high'}
             },
             '老人': {
-                '禁忌食材': ['过硬食物', '过咸食物', '过甜食物', '辛辣食物'],
+                '禁忌食材': [
+                    # 具体、可匹配的禁忌词（写在菜名/食材/做法/标签里才拦得住）
+                    '过硬食物', '过咸食物', '过甜食物', '辛辣食物',
+                    # 高脂/油腻做法（防上纲上线：老人忌油腻，剔除红烧/油炸/油焖等）
+                    '油炸', '油煎', '红烧', '油焖', '爆炒', '干煸', '回锅', '酥肉', '油泼',
+                    '腊肉', '腊肠', '培根', '肉皮', '肥肉', '五花肉', '肥牛', '肥羊',
+                    '猪蹄', '蹄髈', '羊油', '牛油', '黄油', '奶油', '酥饼',
+                    # 辛辣刺激
+                    '辣椒', '花椒', '麻辣', '香辣', '剁椒', '泡椒', '豆瓣酱', '辣酱',
+                    # 过硬难嚼
+                    '脆骨', '骨头', '软骨', '烤鸭', '炸鸡', '铁板', '硬糖', '锅巴',
+                ],
                 '推荐食材': ['软烂食物', '粥类', '蒸蛋', '豆腐', '蔬菜泥'],
                 '营养需求': {'protein': 'high', 'calcium': 'high', 'fiber': 'medium'}
             }
@@ -819,11 +830,30 @@ class ConstraintEngine:
             return recipes
         
         # 过滤符合约束条件的菜谱
+        forced = {}
+        # 特殊人群联动清淡偏好：老人/儿童等需清淡易消化的群体，
+        # 即使未明确说"清淡"，也应按清淡过滤（配合 _check_special_group 的禁忌词，
+        # 双保险保证"给老人做的"不会推荐出红烧/油炸/重油重辣的荤菜）。
+        for g in ([user_profile.get('special_groups', [])]
+                  if isinstance(user_profile.get('special_groups', []), str) else
+                  user_profile.get('special_groups', [])):
+            if g in ('老人', '儿童', '孕妇', '哺乳期'):
+                forced = {'low_fat': True, 'low_spicy': True, 'light': True}
+                break
         filtered = []
         for recipe in recipes:
             passed, violations = self.check_constraints(recipe, user_profile)
-            if passed:
-                filtered.append(recipe)
+            if not passed:
+                continue
+            # 特殊人群清淡联动：写进临时档案做偏好硬过滤
+            if forced:
+                import copy as _cope
+                _merged = _cope.deepcopy(user_profile)
+                _merged['preferences'] = dict(_merged.get('preferences', {}))
+                _merged['preferences'].update(forced)
+                if not self._check_preference(recipe, _merged):
+                    continue
+            filtered.append(recipe)
         
         return filtered
     

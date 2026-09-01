@@ -2529,8 +2529,25 @@ def dialog_stream():
                     '家常菜 汤菜搭配 均衡一餐',
                 ]
                 search_q = _default_qs[dm.diversity_seed % len(_default_qs)]
+
+            # 特殊人群清淡增强：年龄向/孕期等用户的检索词应朝向"清淡易消化"，避免
+            # 即便硬约束生效，候选池却全是重油菜而筛完不足。同时把油腻/难消化方向词压到末尾，
+            # 提高清淡候选的排名。仅在"无明确菜向"或"清淡偏好"时叠加，避免误改"想要红烧肉"。
+            _special_groups = list(dm.user_preferences.get('special_groups', []) or [])
+            _needs_light = any(g in ('老人', '儿童', '孕妇', '哺乳期') for g in _special_groups) \
+                or filters.get('low_fat') or filters.get('light')
+            # core 里若仍带"给老人做的/清淡"等口语而非具体食材，视为无明确菜向，走强清淡词
+            _core_phr = not core_clean or any(p in core_clean for p in
+                                              ('老人', '清淡', '易消化', '软烂', '做', '给', '点', '的'))
+            if _needs_light and _core_phr:
+                search_q = '清淡 易消化 软烂 粥 汤 蒸菜 豆腐 炖 温补 少油 清蒸'
+            elif _needs_light and core_clean not in _vague:
+                # 有明确菜向但用户也是需清淡人群（如"给老人做的排骨"）：追加清淡方向词
+                search_q = f'{core_clean} 清淡 少油 软烂 易消化 清蒸 炖'
             
-            results = retriever.search(search_q, top_k=10, filters=filters)
+            # 候选池多召回：过滤后（尤其特殊人群需清淡过滤会排除大量重油菜）仍有余量，
+            # 避免推荐不足（少于5道）或荤素失衡。成本可接受，过滤都在顶层做。
+            results = retriever.search(search_q, top_k=24, filters=filters)
             t_search = time.perf_counter()
             
             if user_ids:
