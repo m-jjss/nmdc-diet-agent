@@ -62,6 +62,9 @@ class RAGRetriever:
         self.index = None  # FAISS索引对象
         self.recipe_index_map = []  # 索引ID到菜谱的映射
         self.vector_cache = {}  # 向量缓存，格式: {hash_key: vector}
+        self._cross_encoder = None  # 交叉编码器精排模型（bge-reranker，懒加载）
+        self._ce_state = 'unloaded'  # unloaded / ready / unavailable
+        self._ce_score_cache = {}  # (query, recipe_name) -> score，避免重复打分
         self._load_data()
     
     # 非菜品条目：方太料理机的功能操作/预处理指令，不是一道菜，检索时必须排除
@@ -312,6 +315,13 @@ class RAGRetriever:
             with open(index_path, 'rb') as f:
                 self.index = faiss.deserialize_index(
                     np.frombuffer(f.read(), dtype=np.uint8))
+
+            # 维度校验：配置的 embedding 模型变更（如 384维MiniLM → 512维bge）后，
+            # 旧索引与查询向量维度不一致会导致检索错乱，此时应丢弃旧索引重建。
+            if getattr(self.index, 'd', 0) != Config.VECTOR_DIMENSION:
+                print(f"FAISS索引维度不匹配（索引 {self.index.d} 维 vs 配置 {Config.VECTOR_DIMENSION} 维），将重建索引")
+                self.index = None
+                return False
             
             # 加载菜谱映射
             with open(map_path, 'r', encoding='utf-8') as f:
@@ -333,6 +343,70 @@ class RAGRetriever:
             print(f"加载索引失败: {e}")
             return False
     
+    # ── 交叉编码器精排（bge-reranker）─────────────────────────
+    # 双塔 embedding 只能"粗排"（查询与文档各自编码后比相似度），
+    # 交叉编码器把 query 和菜谱文本拼在一起过一遍 BERT，能捕捉细粒度相关性，
+    # 对"下饭菜/清淡的汤"这类模糊查询的前几名排序提升明显。
+    # 模型不可用（未下载/离线）时自动跳过，不影响原有检索流程。
+
+    _CE_MODEL_NAME = 'BAAI/bge-reranker-base'
+    _CE_MAX_PAIRS = 16       # 每次精排最多打分的候选数（控制CPU耗时）
+    _CE_SCORE_MIN = 0.0      # 交叉编码器输出经sigmoid后低于该值视为弱相关
+
+    def _init_cross_encoder(self):
+        """懒加载交叉编码器；不可用时置为 unavailable，只尝试一次。"""
+        if self._ce_state == 'ready':
+            return self._cross_encoder
+        if self._ce_state == 'unavailable':
+            return None
+        try:
+            import os as _os
+            _os.environ.setdefault('HF_HUB_OFFLINE', '1')  # 竞赛演示环境离线优先，避免网络阻塞
+            from sentence_transformers import CrossEncoder
+            self._cross_encoder = CrossEncoder(self._CE_MODEL_NAME, max_length=128)
+            self._ce_state = 'ready'
+            print(f"[OK] 交叉编码器精排已加载: {self._CE_MODEL_NAME}")
+        except Exception as e:
+            self._ce_state = 'unavailable'
+            self._cross_encoder = None
+            print(f"[INFO] 交叉编码器不可用({str(e)[:80]})，跳过精排，使用原排序")
+        return self._cross_encoder
+
+    def _cross_encoder_rerank(self, candidates: List[Dict], query: str, top_k: int) -> List[Dict]:
+        """用交叉编码器对候选菜精排，返回按相关性降序的前 top_k 个。
+        打分文本 = 菜名 + 主要食材，与用户查询拼接后逐一打分；
+        分数缓存避免同一轮多路检索重复计算。"""
+        ce = self._init_cross_encoder()
+        if ce is None or not candidates:
+            return candidates[:top_k]
+        pool = candidates[:self._CE_MAX_PAIRS]
+        pairs, keys = [], []
+        for r in pool:
+            name = r.get('name', '')
+            ings = ' '.join(self._safe_ingredients(r))[:60]
+            keys.append((query, name))
+            pairs.append((query, f"{name} {ings}"))
+        to_pred, pred_idx = [], []
+        for i, k in enumerate(keys):
+            if k in self._ce_score_cache:
+                continue
+            to_pred.append(pairs[i])
+            pred_idx.append(i)
+        if to_pred:
+            try:
+                scores = ce.predict(to_pred)
+                import math
+                for j, i in enumerate(pred_idx):
+                    s = float(scores[j])
+                    # bge-reranker 输出 logits，sigmoid 归一到 0~1
+                    self._ce_score_cache[keys[i]] = 1 / (1 + math.exp(-s)) if -60 < s < 60 else (1.0 if s > 0 else 0.0)
+            except Exception as e:
+                print(f"[WARN] 精排打分失败: {str(e)[:60]}")
+                return candidates[:top_k]
+        scored = [(self._ce_score_cache.get(k, 0.0), r) for k, r in zip(keys, pool)]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:top_k]]
+
     def search(self, query: str, top_k: int = 10, filters: Optional[Dict] = None) -> List[Dict]:
         """
         检索菜谱
@@ -381,6 +455,8 @@ class RAGRetriever:
         # 2) FAISS 语义近邻其次（能理解同义/口语表达，如"想吃点下饭的""清淡一点的晚餐"）
         # 3) 仅当两者都不足时才退化到确定性规则兜底（"今晚吃什么"这类无指向查询）
         #    —— 规则兜底不再提前用，避免语义有效的查询被固定菜单淹没
+        # 合并后若交叉编码器可用，用 bge-reranker 对候选池做细粒度精排再截断 top_k
+        pool_size = max(top_k * 2, 12)
         merged, seen = [], set()
         for r in kw_results:
             name = r.get('name', '')
@@ -388,28 +464,29 @@ class RAGRetriever:
                 continue
             seen.add(name)
             merged.append(r)
-            if len(merged) >= top_k:
-                return merged
+            if len(merged) >= pool_size:
+                break
 
-        if len(merged) < top_k:
+        if len(merged) < pool_size:
             for r in results:
                 name = r.get('name', '')
                 if name and name not in seen:
                     seen.add(name)
                     merged.append(r)
-                if len(merged) >= top_k:
+                if len(merged) >= pool_size:
                     break
 
-        if len(merged) < top_k:
-            for r in self._fallback_selection(filters, top_k):
+        if len(merged) < pool_size:
+            for r in self._fallback_selection(filters, pool_size):
                 name = r.get('name', '')
                 if name and name not in seen:
                     seen.add(name)
                     merged.append(r)
-                if len(merged) >= top_k:
+                if len(merged) >= pool_size:
                     break
 
-        return merged
+        # 交叉编码器精排：对合并池按"查询-菜谱"真实相关性重排，取前 top_k
+        return self._cross_encoder_rerank(merged, query, top_k)
 
     def _fallback_selection(self, filters: Optional[Dict] = None, top_k: int = 5) -> List[Dict]:
         """

@@ -495,11 +495,18 @@ def _execute_agent_tool(tool_name: str, tool_args: dict, user_id: str = None, us
             filters['exclude_ingredients'] = list(set(filters.get('exclude_ingredients', []) + neg_ex))
         search_q = core if core else ('晚餐' if neg_ex else query)
         try:
-            results = retriever.search(search_q, top_k=top_k, filters=filters)
+            # 多召回一倍候选，供多样性轮换在更大的池子里换菜（而非同一批内换顺序）
+            results = retriever.search(search_q, top_k=max(top_k * 2, 10), filters=filters)
             if user_ids:
                 results = engine.filter_by_constraints(results, user_ids=user_ids)
             elif user_id:
                 results = engine.filter_by_constraints(results, user_id=user_id)
+            # 多样性轮换：在 2 倍候选池里按 diversity_seed 轮转窗口后截取 top_k，
+            # 保证同一用户每次"新对话"（种子自增）能看到不同的菜；
+            # 第 0 次会话（seed=0）保持精排原始顺序，相关性最高。
+            if dm and getattr(dm, 'diversity_seed', 0) > 0 and len(results) > top_k:
+                _off = (dm.diversity_seed * top_k) % len(results)
+                results = results[_off:] + results[:_off]
             recipes = results[:top_k]
             return _json.dumps([{
                 "name": r.get("name", "未知"),
@@ -621,6 +628,15 @@ def warmup():
     start_time = time.perf_counter()
     retriever = get_retriever()
     retriever.build_index()
+    # 预热精排组件：embedding 与交叉编码器懒加载若放在首个请求会拖慢 20s+，
+    # 启动时完成加载 + 一次打分预热，保证首个用户请求即达稳态延迟。
+    try:
+        retriever._text_to_vector('预热')
+        if retriever._init_cross_encoder() is not None:
+            retriever._cross_encoder_rerank(
+                retriever.recipes[:2], '预热查询', 1)
+    except Exception as e:
+        print(f"   [WARN] 精排预热跳过: {e}")
     print(f"   完成，耗时: {(time.perf_counter() - start_time) * 1000:.2f}ms")
     
     # 预加载约束引擎
@@ -1862,7 +1878,89 @@ def _handler_detail(ctx: DialogContext):
     if dm is not None:
         dm._detail_pending = {'name': target['name']}
     ctx.response_text = _format_detail_brief(target)
+    # 个性化食材替换建议：结合用户过敏/目标/特殊人群，给出食材级替换方案
+    # （如"花生→腰果""五花肉→鸡胸肉"），提升"千人千面"的专家评审印象分。
+    swaps = _suggest_ingredient_swaps(target, dm)
+    if swaps:
+        ctx.response_text += "\n\n🔄 食材替换建议：" + "；".join(swaps)
     ctx.recommendations = []
+
+
+# 食材替换知识库：按用户状态（过敏/膳食目标/特殊人群/素食偏好）触发的替换规则。
+# 规则为确定性匹配（菜谱食材文本包含触发词即命中），不依赖 LLM，零额外延迟。
+_INGREDIENT_SWAP_RULES = {
+    # 触发状态: [(触发食材词, 替换建议), ...]
+    'allergy': [
+        (('花生', '花生米', '花生碎'), '花生 → 腰果仁或黄瓜丁（规避坚果过敏）'),
+        (('虾', '虾仁', '基围虾', '小龙虾'), '虾 → 鸡胸肉丁或鱿鱼（规避甲壳类过敏）'),
+        (('鸡蛋', '蛋液', '蛋清', '蛋黄'), '鸡蛋 → 木薯粉水或嫩豆腐（规避蛋类过敏）'),
+        (('牛奶', '奶油', '芝士', '黄油'), '牛奶/奶油 → 燕麦奶或椰奶（规避乳制品过敏）'),
+    ],
+    'diet': [
+        (('五花肉', '肥牛', '猪蹄', '猪油'), '五花肉/肥肉 → 鸡胸肉或里脊（降脂减卡）'),
+        (('油炸', '炸制', '裹粉炸'), '油炸 → 空气炸锅或烤箱烘烤（减油约70%）'),
+        (('白糖', '冰糖', '红糖'), '糖 → 代糖且用量减半（控糖）'),
+    ],
+    'special': [
+        (('料酒', '黄酒', '白酒', '啤酒'), '料酒/酒类 → 直接省略或用柠檬汁替代（孕期/哺乳期忌酒精）'),
+        (('辣椒', '小米椒', '干辣椒', '花椒'), '辣椒/花椒 → 甜椒或少许白胡椒（老人/儿童/哺乳期宜温和）'),
+        (('腊肉', '咸菜', '咸鱼'), '腌制食材 → 新鲜肉类蔬菜（低盐更健康）'),
+    ],
+    'vegetarian': [
+        (('猪肉', '牛肉', '鸡肉', '排骨', '肉丝', '肉片'), '肉类 → 豆腐/香菇/杏鲍菇（素食替代）'),
+        (('蚝油', '鱼露', '虾皮'), '蚝油/鱼露 → 香菇素蚝油（纯素调味）'),
+    ],
+}
+
+
+def _suggest_ingredient_swaps(recipe: Dict, dm) -> list:
+    """根据用户画像（过敏/膳食目标/特殊人群/素食）生成菜谱的食材替换建议。
+    返回最多 3 条建议文本；无匹配时返回空列表。"""
+    if dm is None or not recipe:
+        return []
+    prefs = getattr(dm, 'user_preferences', {}) or {}
+    ings_text = ' '.join(str(x) for x in recipe.get('ingredients', [])) \
+        if isinstance(recipe.get('ingredients'), list) else str(recipe.get('ingredients', ''))
+    all_text = f"{recipe.get('name', '')} {ings_text}"
+
+    # 根据用户状态确定激活的规则组
+    active_groups = []
+    if prefs.get('allergies') or prefs.get('excluded_ingredients'):
+        active_groups.append(('allergy', set(prefs.get('allergies', [])) | set(prefs.get('excluded_ingredients', []))))
+    goals = [str(g) for g in (prefs.get('dietary_goals') or [])]
+    if any(k in g for g in goals for k in ('减肥', '减脂', '低卡', '控糖', '瘦身')):
+        active_groups.append(('diet', None))
+    groups = [str(g) for g in (prefs.get('special_groups') or [])]
+    if groups:
+        active_groups.append(('special', set(groups)))
+    if prefs.get('preferences', {}).get('vegetarian') or prefs.get('preferences', {}).get('素食'):
+        active_groups.append(('vegetarian', None))
+
+    suggestions, seen = [], set()
+    for group_name, extra in active_groups:
+        for triggers, tip in _INGREDIENT_SWAP_RULES[group_name]:
+            # 过敏类：仅当用户过敏/排除的食材与触发词匹配时才建议（避免泛化打扰）
+            if group_name == 'allergy' and extra:
+                user_items = ' '.join(str(x) for x in extra)
+                matched = any(t in user_items for t in triggers) \
+                    or any(str(x) in t for x in extra for t in triggers)
+                if not matched:
+                    continue
+            # 特殊人群规则细分：辣度替换仅对老人/儿童/哺乳期生效；
+            # 酒精替换仅对孕妇/哺乳期/备孕生效；腌制食材规则对所有特殊人群生效。
+            if group_name == 'special' and extra:
+                mild = bool({'老人', '儿童', '哺乳期'} & extra)
+                preg = bool({'孕妇', '哺乳期', '备孕'} & extra)
+                is_spicy_rule = any(t in ('辣椒', '小米椒', '干辣椒', '花椒') for t in triggers)
+                is_alcohol_rule = any(t in ('料酒', '黄酒', '白酒', '啤酒') for t in triggers)
+                if is_spicy_rule and not mild:
+                    continue
+                if is_alcohol_rule and not preg:
+                    continue
+            if any(t in all_text for t in triggers) and tip not in seen:
+                seen.add(tip)
+                suggestions.append(tip)
+    return suggestions[:3]
 
 
 def _handler_reject(ctx: DialogContext):
@@ -1972,6 +2070,11 @@ def _handler_vague(ctx: DialogContext):
         elif user_id:
             results = engine.filter_by_constraints(results, user_id=user_id)
 
+        # 多样性轮换：模糊查询走固定的"晚餐"检索词，精排后每次结果趋同。
+        # 用 diversity_seed 在前 10 名里轮换取 5 道，同一用户每次"新对话"换一批菜。
+        if dm and getattr(dm, 'diversity_seed', 0) > 0 and len(results) > 5:
+            _off = (dm.diversity_seed * 5) % len(results)
+            results = results[_off:] + results[:_off]
         ctx.recommendations = results[:5]
         recipe_names = [r['name'] for r in ctx.recommendations]
         dm.add_recommended_recipes(recipe_names)
@@ -2597,7 +2700,9 @@ def dialog_stream():
             # 泛化提问（"吃什么/随便/推荐看看"）无明确菜向：不做语义检索（"吃什么"会命中海鲜簇），
             # 退化为平衡的一餐默认检索，避免推荐与问题完全脱节。
             _vague = {'吃什么', '吃点啥', '吃点吗', '随便', '看看', '看看有什么', '有啥',
-                      '推荐', '推荐推荐', '来点', '有什么', '还有什么', '有什么吃的', '帮我看看'}
+                      '推荐', '推荐推荐', '来点', '有什么', '还有什么', '有什么吃的', '帮我看看',
+                      # 清洗后可能残留的短泛化词（"推荐点吃的"→core="吃"）：同样视为无明确菜向
+                      '吃', '吃的', '想吃', '想吃的', '点吃', '推荐点', '推荐点吃', '随便推荐点'}
             core_clean = core.strip()
             veg_want = bool(filters.get('vegetarian'))
             # 不为泛化/具体请求再叠加LLM改写：LLM的 search_query 在此路径会拿"吃什么"改出海鲜等偏置词，
@@ -2646,7 +2751,16 @@ def dialog_stream():
                 results = engine.filter_by_constraints(results, user_id=user_id)
             t_filter = time.perf_counter()
             
-            recommendations = results[:5]
+            # 多样性轮换：泛化提问（"吃什么/随便"）时，精排会把不同等价检索词的
+            # 候选重新收敛到同一批高分菜。这里用 diversity_seed 在前 12 名的高质量
+            # 候选池里轮换取 5 道，保证同一用户每次"新对话"都能换一批菜。
+            _is_vague_q = (not core_clean) or (core_clean in _vague)
+            if _is_vague_q and dm and len(results) > 5:
+                _pool = results[:12]
+                _off = (dm.diversity_seed * 5) % len(_pool)
+                recommendations = (_pool[_off:] + _pool[:_off])[:5]
+            else:
+                recommendations = results[:5]
             # — 追加约束时保留历史推荐（复用与 Agent 主路径一致的逻辑） —
             # 用户追加"不吃鱼"等约束时，不应把已认可的历史菜全换掉：
             # 把仍符合当前检索过滤条件的历史菜置顶并入。

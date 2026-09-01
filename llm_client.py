@@ -25,13 +25,22 @@ def _init_sbert():
         return _SBERT_MODEL
     try:
         from sentence_transformers import SentenceTransformer
-        _SBERT_MODEL = SentenceTransformer(
-            Config.EMBEDDING_MODEL, device='cpu',
-            cache_folder=str(Config.SBERT_CACHE_DIR),
-        )
+        try:
+            _SBERT_MODEL = SentenceTransformer(
+                Config.EMBEDDING_MODEL, device='cpu',
+                cache_folder=str(Config.SBERT_CACHE_DIR),
+            )
+        except Exception:
+            # 网络或镜像异常时（如 hf-mirror 不可达），切换离线模式从本地缓存加载。
+            # 模型此前已下载到缓存目录，离线加载不依赖任何网络请求。
+            os.environ['HF_HUB_OFFLINE'] = '1'
+            _SBERT_MODEL = SentenceTransformer(
+                Config.EMBEDDING_MODEL, device='cpu',
+                cache_folder=str(Config.SBERT_CACHE_DIR),
+            )
         print(f"[OK] Embedding模型已加载: {Config.EMBEDDING_MODEL} (dim={Config.VECTOR_DIMENSION})")
     except Exception as e:
-        print(f"[WARN] sentence-transformers不可用({e})，使用确定性哈希回退")
+        print(f"[WARN] sentence-transformers不可用({e})，使用确定性哈希回退（检索质量会明显下降！）")
         _SBERT_MODEL = False
     return _SBERT_MODEL
 
