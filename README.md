@@ -4,12 +4,21 @@
 
 ## 功能特性
 
-- **多约束推理** — 过敏原、慢性疾病、特殊人群禁忌自动过滤
+- **多约束推理** — 过敏原、慢性疾病、特殊人群禁忌自动过滤，对话中实时识别健康约束
+
 - **多人场景合并** — 并集硬约束 + 交集软约束策略
-- **RAG 检索增强** — FAISS 向量索引 + 菜谱语义检索
-- **Agent 多轮交互** — ReAct 模式，支持约束追加、局部替换、方案否定等 6 种交互
+
+- **RAG 检索增强** — FAISS 向量索引 + 中文语义检索（bge-small-zh）+ 交叉编码器精排
+
+- **Agent 多轮交互** — ReAct 模式，支持约束追加、局部替换、方案否定、食材替换咨询、道别等交互
+
+- **推荐多样性与数量理解** — 排除最近已推菜避免重复，识别"只吃四道"等数量表达，单一食材自动荤素搭配均衡
+
 - **流式响应** — SSE 协议，首 Token 延迟 < 2s
+
 - **营养计算** — Mifflin-St Jeor 公式，7 维度膳食平衡度评分
+
+- **性能优化** — ReAct 迭代收敛 + 泛化查询缓存，端到端延迟显著降低
 
 ## 快速开始
 
@@ -35,12 +44,12 @@ docker-compose up -d
 
 ## 文档
 
-| 文档 | 说明 |
-|------|------|
-| [技术方案文档](docs/技术方案文档.md) | 系统架构、数据设计、检索策略 |
-| [API 接口文档](docs/API接口文档.md) | 接口定义与调用示例 |
-| [部署文档](docs/部署文档.md) | 环境配置与部署步骤 |
-| [作品信息摘要](docs/作品信息摘要.md) | 项目概览与创新点 |
+| 文档                          | 说明             |
+| --------------------------- | -------------- |
+| [技术方案文档](docs/技术方案文档.md)    | 系统架构、数据设计、检索策略 |
+| [API 接口文档](docs/API接口文档.md) | 接口定义与调用示例      |
+| [部署文档](docs/部署文档.md)        | 环境配置与部署步骤      |
+| [作品信息摘要](docs/作品信息摘要.md)    | 项目概览与创新点       |
 
 ## 技术栈
 
@@ -54,10 +63,11 @@ Python · Flask · DeepSeek · FAISS · sentence-transformers · Docker
 ├── llm_client.py           # LLM 客户端封装（DeepSeek + Function Calling）
 ├── rag_retriever.py        # RAG 检索器（FAISS 索引 + hash 回退）
 ├── constraint_engine.py    # 约束引擎（过敏/疾病/营养计算）
-├── dialog_enhancer.py      # 对话管理器（意图识别/偏好提取）
+├── dialog_enhancer.py      # 对话管理器（意图识别/偏好/疾病提取）
 ├── result_verifier.py      # 结果验证器（幻觉/过敏/约束检测）
 ├── gradio_app.py           # Gradio Web 前端界面
 ├── eval.py                 # 竞赛自动评分脚本（基础/复杂/多轮/性能4维度，含25组对话用例）
+├── test_daily_dialog.py    # 日常场景多轮对话压力测试（10 组场景、39 轮）
 ├── config.py               # 配置中心（环境变量 + 默认值）
 ├── requirements.txt        # Python 依赖
 ├── .env.example            # 环境变量模板
@@ -70,3 +80,4 @@ Python · Flask · DeepSeek · FAISS · sentence-transformers · Docker
 ├── ingredient_synonym_map.json       # 食材同义词映射
 └── 对话用例.json           # 大赛提供的 25 组对话用例
 ```
+

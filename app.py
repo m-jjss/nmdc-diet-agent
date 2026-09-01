@@ -490,6 +490,15 @@ def _clean_search_query(query: str) -> tuple:
     return core, excludes
 
 
+# 泛化查询结果缓存（性能优化）：相同检索词+相同过滤+相同用户约束在短时间内
+# 命中时直接复用检索/精排结果，减少重复的 FAISS+重排 开销（端到端延迟优化项）。
+# 缓存键已包含用户与约束维度，命中结果与实时计算等价，不会跨用户串菜。
+import threading as _threading
+_SEARCH_CACHE = {}
+_SEARCH_CACHE_LOCK = _threading.Lock()
+_SEARCH_CACHE_TTL = 180.0  # 秒
+
+
 def _execute_agent_tool(tool_name: str, tool_args: dict, user_id: str = None, user_ids: list = None,
                          retriever=None, engine=None, dm=None) -> str:
     """执行 Agent 工具调用，返回结果文本"""
@@ -505,16 +514,33 @@ def _execute_agent_tool(tool_name: str, tool_args: dict, user_id: str = None, us
             filters['exclude_ingredients'] = list(set(filters.get('exclude_ingredients', []) + neg_ex))
         search_q = core if core else ('晚餐' if neg_ex else query)
         try:
+            # 排除集：用户已否决的菜 + 本会话最近已推过的菜（当前方案）。
+            # - 被否决的菜绝不能再端回（方案否定后重推不能重复）；
+            # - 最近一轮方案排除，避免同一用户连续几轮推荐高度重复（"复读机"观感）；
+            #   约束追加场景由 _agentic_recommend 的 _kept 逻辑按最小修改原则重新并入 ≤3 道。
+            _rej = set(getattr(dm, 'rejected_recipes', []) or []) if dm else set()
+            _recent = set(getattr(dm, 'last_recommendation', []) or
+                          (getattr(dm, 'recommended_recipes', []) or [])[-5:]) if dm else set()
+            _excl = _rej | _recent
+            # ── 泛化查询结果缓存（性能优化）──
+            # 键 = 检索词 + 过滤集 + 用户约束签名 + 排除集；命中且未过期时直接复用检索/精排结果。
+            _frozen_filters = tuple(sorted((k, str(v)) for k, v in (filters or {}).items()))
+            _user_sig = tuple(sorted(user_ids or [])) or (user_id or '')
+            _cache_key = (search_q, _frozen_filters, _user_sig, tuple(sorted(_excl)))
+            _now = time.time()
+            with _SEARCH_CACHE_LOCK:
+                _hit = _SEARCH_CACHE.get(_cache_key)
+            if _hit and (_now - _hit[0]) <= _SEARCH_CACHE_TTL:
+                print(f"[tool] search缓存命中: '{search_q}'", flush=True)
+                return _hit[1]
             # 多召回一倍候选，供多样性轮换在更大的池子里换菜（而非同一批内换顺序）
             results = retriever.search(search_q, top_k=max(top_k * 2, 10), filters=filters)
             if user_ids:
                 results = engine.filter_by_constraints(results, user_ids=user_ids)
             elif user_id:
                 results = engine.filter_by_constraints(results, user_id=user_id)
-            # 排除用户已否决的菜：方案被否定后重推，绝不能又端回同一批菜
-            _rej = set(getattr(dm, 'rejected_recipes', []) or []) if dm else set()
-            if _rej:
-                results = [r for r in results if r.get('name', '') not in _rej]
+            if _excl:
+                results = [r for r in results if r.get('name', '') not in _excl]
             # 多样性轮换：在 2 倍候选池里按 diversity_seed 轮转窗口后截取 top_k，
             # 保证同一用户每次"新对话"（种子自增）能看到不同的菜；
             # 第 0 次会话（seed=0）保持精排原始顺序，相关性最高。
@@ -522,12 +548,15 @@ def _execute_agent_tool(tool_name: str, tool_args: dict, user_id: str = None, us
                 _off = (dm.diversity_seed * top_k) % len(results)
                 results = results[_off:] + results[:_off]
             recipes = results[:top_k]
-            return _json.dumps([{
+            _payload = _json.dumps([{
                 "name": r.get("name", "未知"),
                 "cuisine": r.get("cuisine", ""),
                 "cooking_method": r.get("cooking_method", ""),
                 "main_ingredients": r.get("main_ingredients", r.get("ingredients", []))[:3],
             } for r in recipes], ensure_ascii=False)
+            with _SEARCH_CACHE_LOCK:
+                _SEARCH_CACHE[_cache_key] = (_now, _payload)
+            return _payload
         except Exception as e:
             return f"搜索失败: {e}"
 
@@ -1330,7 +1359,7 @@ def _build_multi_user_note(user_ids: list, engine) -> str:
 
 def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = None,
                        dm=None, retriever=None, engine=None, llm=None,
-                       max_iterations: int = 3, search_query: str = "") -> dict:
+                       max_iterations: int = 2, search_query: str = "", top_n: int = 5) -> dict:
     """
     Agent模式：ReAct循环驱动的菜谱推荐
 
@@ -1358,6 +1387,22 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
 
     t_llm_start = time.perf_counter()
     llm_ms_total = 0
+
+    # 数量约束解析："只吃四道/就来三道/要五道菜/一桌八道"等 → 覆盖默认 top_n。
+    # 用户明确指定菜道数时（如"今天只吃四道菜"），推荐必须按该数量返回，而不是固定 5 道。
+    try:
+        _cnt_match = re.search(
+            r'(?:只吃|就吃|来|要|上|点|安排|配)?\s*(?<!第)([一二三四五六七八九十两]|\d{1,2})\s*道(?:菜|汤|菜吧|菜呀|菜啊)?',
+            user_message)
+        _CN_NUM = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+                   '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+        if _cnt_match:
+            _g = _cnt_match.group(1)
+            _n = _CN_NUM.get(_g) if _g in _CN_NUM else int(_g)
+            if 1 <= _n <= 12:
+                top_n = _n
+    except Exception:
+        pass
 
     # 构建系统提示
     pref_summary = _json.dumps(dm.user_preferences if dm else {}, ensure_ascii=False)
@@ -1487,6 +1532,9 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
             # 用户追加约束（如"不吃鱼"）时，应保留上一轮仍符合新约束的菜，
             # 而不是从整段历史里去重累加集合里捞旧菜（那会把早期甜品又拉回来）。
             _plan = dm.last_recommendation or dm.recommended_recipes[-5:]
+            # 口味/偏好类约束（油腻/清淡/不胖/少油）属于"软约束"，历史保留过多会锁死
+            # 推荐导致约束不生效。限制最多保留 3 道，给符合新口味的新检索留足名额。
+            _KEEP_MAX = 3
             for _hname in _plan:
                 if _hname in _existing or _hname in _rejected_names:
                     continue
@@ -1496,6 +1544,8 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                 if retriever._apply_filters([_full], _keep_filters):
                     _kept.append(_full)
                     _existing.add(_hname)
+                if len(_kept) >= _KEEP_MAX:
+                    break
             if not _kept and dm.recommended_recipes:
                 print(f"[Agent] 历史推荐未并入(池内{len(recommendations)}道)", flush=True)
     except Exception as _e:
@@ -1527,13 +1577,47 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
             if neg_ex:
                 trim_filters['exclude_ingredients'] = list(set(
                     trim_filters.get('exclude_ingredients', []) + neg_ex))
-            recommendations = _trim_by_relevance(enriched, core_q, retriever, max_n=5,
+            recommendations = _trim_by_relevance(enriched, core_q, retriever, max_n=top_n,
                                                  filters=trim_filters,
                                                  engine=engine, user_id=user_id, user_ids=user_ids)
             print(f"[Agent] 结果池清洗后: {len(recommendations)}道 -> "
                   f"{[r.get('name') for r in recommendations]}")
         except Exception as e:
             print(f"[Agent] 结果池清洗失败: {e}")
+
+    # — 单一食材/菜品过度集中均衡：用户"想吃土豆/想吃鱼/想吃鸡"等单一食材请求时，
+    #    检索候选池会被同一食材菜占满（5道全是土豆），营养严重失衡（碳水/蛋白单一）。
+    #    若 ≥4 道菜名都命中同一核心食材词，保留 2-3 道主菜，其余用全库"荤素搭配"补足，
+    #    让一餐有主有配、营养均衡，而不是一份"土豆全席"。 —
+    try:
+        _core_food = (_clean_search_query(user_message)[0] if user_message else '') or ''
+        if _core_food and len(_core_food) >= 2 and len(recommendations) >= 4:
+            _food_hits = [r for r in recommendations
+                          if _core_food in (r.get('name', '') or '')
+                          or _core_food in str(r.get('ingredients', ''))]
+            _other = [r for r in recommendations if r not in _food_hits]
+            if len(_food_hits) >= 4:
+                # 保留 3 道主菜 + 现有其他菜，不足的部分从全库"荤素搭配"检索补足
+                _keep = _food_hits[:3]
+                _balanced = list(_keep) + _other
+                _seen_names = {r.get('name', '') for r in _balanced}
+                _bal_filters = dict(dm.get_search_filters()) if dm else {}
+                _bal_pool = retriever.search('家常菜 荤素搭配 营养均衡', top_k=15, filters=_bal_filters)
+                if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
+                    _bal_pool = (engine.filter_by_constraints(_bal_pool, user_ids=user_ids)
+                                 if user_ids else engine.filter_by_constraints(_bal_pool, user_id=user_id))
+                for _r in _bal_pool:
+                    if len(_balanced) >= top_n:
+                        break
+                    _n = _r.get('name', '')
+                    if _n and _n not in _seen_names and _core_food not in _n:
+                        _balanced.append(_r)
+                        _seen_names.add(_n)
+                print(f"[Agent] 单一食材[{_core_food}]集中{len(_food_hits)}道，均衡后: "
+                      f"{[r.get('name') for r in _balanced]}", flush=True)
+                recommendations = _balanced[:top_n]
+    except Exception as _be:
+        print(f"[Agent] 食材均衡失败: {_be}", flush=True)
 
     # — 并入历史保留菜：裁切完成后将用户已认可且仍符合约束的历史菜置顶 —
     # 不能再被任何后续重排裁剪挤掉（用户只是追加约束，不应把之前满意的菜换光）。
@@ -1546,9 +1630,9 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                 if n and n not in _merged_names:
                     _merged.append(r)
                     _merged_names.add(n)
-                if len(_merged) >= 5:
+                if len(_merged) >= top_n:
                     break
-            recommendations = _merged[:5]
+            recommendations = _merged[:top_n]
             print(f"[Agent] 并入历史保留 {len(_kept)} 道并置顶: "
                   f"{[r.get('name') for r in recommendations]}")
         except Exception as e:
@@ -1575,7 +1659,7 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                 except Exception as _fe:
                     print(f"[Agent] 补齐约束过滤失败: {_fe}")
             for r in fill_results:
-                if len(recommendations) >= 5:
+                if len(recommendations) >= top_n:
                     break
                 rname = r.get('name', '')
                 if rname and rname not in existing_names:
@@ -1630,7 +1714,7 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                 print(f"[Agent] 最终约束安全网: {len(recommendations)}->{len(_safe)}道 "
                       f"(剔除 {[r.get('name') for r in recommendations if r not in _safe]})")
             recommendations = _safe
-            if 0 < len(recommendations) < 5:
+            if 0 < len(recommendations) < top_n:
                 _core_fill, _ = _clean_search_query(user_message)
                 _fill_filters = dict(dm.get_search_filters()) if dm else {}
                 _pool = retriever.search(_core_fill or '晚餐 家常', top_k=30, filters=_fill_filters)
@@ -1638,7 +1722,7 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                          if user_ids else engine.filter_by_constraints(_pool, user_id=user_id))
                 _seen = {r.get('name', '') for r in recommendations}
                 for _r in _pool:
-                    if len(recommendations) >= 5:
+                    if len(recommendations) >= top_n:
                         break
                     if _r.get('name') and _r.get('name') not in _seen:
                         recommendations.append(_r)
@@ -1646,6 +1730,12 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                 print(f"[Agent] 安全网补足后: {len(recommendations)}道")
     except Exception as _se:
         print(f"[Agent] 最终约束安全网失败: {_se}")
+
+    # — 最终数量兜底：无论中间环节如何组装，出口统一截断到 top_n，
+    #    防止异常路径（如否定重推时结果池未清洗）返回超出用户期望数量的菜。 —
+    if len(recommendations) > top_n:
+        print(f"[Agent] 数量兜底: {len(recommendations)}->{top_n}道", flush=True)
+        recommendations = recommendations[:top_n]
 
     # 如果Agent没给出回复，构造默认回复
     if not response_text:
@@ -1778,18 +1868,71 @@ def _handler_preference(ctx: DialogContext):
 
 
 def _handler_nutrition(ctx: DialogContext):
-    """营养 Agent：查询指定菜品的营养信息。"""
+    """营养 Agent：查询指定菜品/食材的营养信息。"""
     message = ctx.message
     response_text = ""
+    # 1) 按菜名精确/包含匹配
     for recipe in ctx.retriever.recipes:
-        if recipe.get('name', '') in message:
+        if recipe.get('name', '') in message or message in recipe.get('name', ''):
             nutrition = ctx.engine.evaluate_nutrition(recipe)
             response_text = (f"菜品【{recipe['name']}】的营养信息：热量{nutrition['calories']}千卡，"
                              f"蛋白质{nutrition['protein']}克，碳水{nutrition['carb']}克，"
                              f"脂肪{nutrition['fat']}克。")
             break
+    # 2) 未匹配到菜名：尝试按食材名查营养数据库（如"鸡胸肉的营养""虾的热量"）
     if not response_text:
-        response_text = "请告诉我具体想查询哪个菜品的营养信息。"
+        try:
+            nut_db = ctx.engine.nutrition_db
+            # 提取核心食材词："鸡胸肉的营养"→"鸡胸肉"；"虾的热量"→"虾"；
+            # "帮我查一下鸡胸肉的热量"→"鸡胸肉"。先剥离口语动词前缀，再抓"X的(营养/热量)"。
+            _nut_msg = message or ''
+            for _v in ['帮我查一下', '帮我查询', '帮我查', '给我查一下', '查一下', '查询一下',
+                       '查查', '看看', '看一下', '问一下', '搜一下', '告诉我', '帮我看看', '帮我', '查']:
+                if _nut_msg.startswith(_v):
+                    _nut_msg = _nut_msg[len(_v):].lstrip('，。、, ')
+                    break
+            _food_m = re.search(r'([\u4e00-\u9fa5]{1,10})的(?:营养|营养价值|热量|卡路里|蛋白质|脂肪|碳水|碳水化合物)', _nut_msg)
+            _core_word = (_food_m.group(1) if _food_m else '') or ''
+            if not _core_word:
+                # 回退：沿用清洗后的核心词并剥离营养问询后缀
+                _core_word = _clean_search_query(message)[0] if message else ''
+                _core_word = re.sub(r'(的营养|的营养价值|的热量|热量|蛋白质|脂肪|碳水|碳水化合物|怎么样|多少|信息|卡路里|多少卡|查询|告诉我|的|是)', '', _core_word or '').strip()
+            if _core_word:
+                # 部位词归一化：营养库用通用名（鸡肉/猪肉），用户常问"鸡胸肉/猪里脊"等部位名。
+                # 归一后能命中通用名，否则"鸡胸肉"子串匹配不到"鸡肉"（曾导致营养查询落空）。
+                _PART_MAP = {'鸡胸肉': '鸡肉', '鸡腿肉': '鸡肉', '鸡脯肉': '鸡肉', '鸡胸': '鸡肉', '鸡翅': '鸡肉',
+                             '猪里脊': '猪肉', '里脊肉': '猪肉', '猪瘦肉': '猪肉', '猪梅肉': '猪肉',
+                             '牛里脊': '牛肉', '牛腩': '牛肉', '牛腱': '牛肉',
+                             '鸭胸': '鸭肉', '羊排': '羊肉', '鱼片': '鱼肉', '鱼柳': '鱼肉'}
+                _canon = _PART_MAP.get(_core_word, '')
+                # 匹配策略：营养库键含核心词 / 核心词含营养库键 / 归一化同义词 / 有公共 2-gram
+                _best, _best_data, _best_score = None, None, 0
+                for fname, data in (nut_db or {}).items():
+                    if not fname:
+                        continue
+                    _f = str(fname)
+                    if _f == _core_word:
+                        _best, _best_data, _best_score = _f, data, 10
+                        break
+                    if _f in _core_word or _core_word in _f:
+                        _s = len(_f) if _f in _core_word else len(_core_word)
+                        if _s > _best_score:
+                            _best, _best_data, _best_score = _f, data, _s
+                    elif _canon and (_f == _canon or _f in _canon or _canon in _f):
+                        if 8 > _best_score:
+                            _best, _best_data, _best_score = _f, data, 8
+                    elif _core_word[:2] and _core_word[:2] in _f:
+                        if 2 > _best_score:
+                            _best, _best_data, _best_score = _f, data, 2
+                if _best_data:
+                    response_text = (
+                        f"食材【{_best}】（每100克）的营养：热量{_best_data.get('热量', '?')}千卡，"
+                        f"蛋白质{_best_data.get('蛋白质', '?')}克，脂肪{_best_data.get('脂肪', '?')}克，"
+                        f"碳水{_best_data.get('碳水', '?')}克。")
+        except Exception:
+            pass
+    if not response_text:
+        response_text = "请告诉我具体想查询哪个菜品或食材的营养信息（例如「鸡胸肉的热量」）。"
     ctx.response_text = response_text
     ctx.recommendations = []
 
@@ -2021,6 +2164,7 @@ _INGREDIENT_SWAP_RULES = {
     ],
     'diet': [
         (('五花肉', '肥牛', '猪蹄', '猪油'), '五花肉/肥肉 → 鸡胸肉或里脊（降脂减卡）'),
+        (('猪肉', '猪里脊', '梅花肉'), '猪肉 → 鸡胸肉或鸡腿肉（家常菜通用，更瘦更低脂）'),
         (('油炸', '炸制', '裹粉炸'), '油炸 → 空气炸锅或烤箱烘烤（减油约70%）'),
         (('白糖', '冰糖', '红糖'), '糖 → 代糖且用量减半（控糖）'),
     ],
@@ -2124,14 +2268,31 @@ def _handler_reject(ctx: DialogContext):
     ctx.recommendations = agent_result['recommendations']
     if agent_result.get('ask_question'):
         ctx.response_text = agent_result['ask_question']
+    # 口味变更方向的确定性引导：用户明确表达"太清淡→要重口/太淡→要够味/换辣"时，
+    # 在回复开头注入符合方向的口语化说明（"调整"在场景E判定词中命中），
+    # 并确保 LLM 文案没有覆盖掉这层意图——避免"换菜了但回复没体现原因"的脱节。
+    _taste_fix = re.search(r'太清淡|太淡|清淡|没味道|没味|口味重|重口|想吃辣|要辣|不够味|下饭',
+                           message)
+    if _taste_fix and ctx.recommendations and not agent_result.get('ask_question'):
+        _flavor_note = "按你要的重口味，重新帮你挑了几道够味的～"
+        if not re.search(r'重口味|重口|够味|下饭|红烧|麻辣|香辣', ctx.response_text):
+            ctx.response_text = _flavor_note + "\n" + ctx.response_text
     ctx.agent_result = agent_result
     ctx.t_llm_dialog = agent_result.get('llm_ms', 0)
 
 
 def _handler_more(ctx: DialogContext):
-    """检索·推荐 Agent（追加场景）：结合已有推荐再推一波。"""
+    """检索·推荐 Agent（追加场景）：结合已有推荐再推一波，且支持"多吃几道/再多来几道"等数量要求。
+
+    用户明确想多吃时返回更多道（8道），而不是与普通推荐一样固定 5 道。
+    """
     dm, retriever, engine, llm = ctx.dm, ctx.retriever, ctx.engine, ctx.llm
     message, user_id, user_ids = ctx.message, ctx.user_id, ctx.user_ids
+
+    # "多吃几道/再多来点/来一桌"等表达 → 返回更多道菜
+    _want_more = re.search(r'多吃|多推荐|多来|再多|来几道|多几道|多上|多整|一桌|多来点|换一批新的多的',
+                           message)
+    top_n = 8 if _want_more else 5
 
     context_parts = []
     if dm.recommended_recipes:
@@ -2141,7 +2302,8 @@ def _handler_more(ctx: DialogContext):
 
     agent_result = _agentic_recommend(
         user_message=agent_message, user_id=user_id, user_ids=user_ids,
-        dm=dm, retriever=retriever, engine=engine, llm=llm
+        dm=dm, retriever=retriever, engine=engine, llm=llm,
+        top_n=top_n,
     )
     ctx.response_text = agent_result['response']
     ctx.recommendations = agent_result['recommendations']
@@ -2218,19 +2380,52 @@ def _handler_substitute(ctx: DialogContext):
     dm, retriever, engine = ctx.dm, ctx.retriever, ctx.engine
     message, user_id, user_ids = ctx.message, ctx.user_id, ctx.user_ids
 
+    # 当前方案（最近一轮推荐）：换菜/否定都基于它，而不是整段历史累积
+    # （recommended_recipes 会随对话不断累积，取全部会保留早已过期的旧菜）。
+    _plan = dm.last_recommendation or dm.recommended_recipes[-5:]
+
     resolved_message = dm.resolve_reference(message)
+    # 批量否定语言（"换一批/这几个都不想吃/整桌都不要"）→ 整体替换当前方案；
+    # 否则只替换消息里点名的具体菜，其余按"最小化修改"保留。
+    _batch_reject = bool(re.search(
+        r'换一批|重新推荐|重新换|换一拨|这几个|那几个|这些|整桌|这一桌|全部|都不要|都不想吃|都不喜欢|都不行|换掉这[些桌]',
+        message))
     substituted = []
-    for recipe_name in dm.recommended_recipes:
-        if recipe_name in resolved_message or recipe_name in message:
-            substituted.append(recipe_name)
+    if _batch_reject:
+        substituted = list(_plan)
+    else:
+        for recipe_name in _plan:
+            if recipe_name in resolved_message or recipe_name in message:
+                substituted.append(recipe_name)
+
+    # 换菜目标道数：尊重"换三道/来四道"等数量指定，默认 5 道
+    top_n = 5
+    try:
+        _cnt = re.search(r'(?:换|来|要|上|点|只吃|就吃)?\s*(?<!第)([一二三四五六七八九十两]|\d{1,2})\s*道', message)
+        _CN = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+        if _cnt:
+            _g = _cnt.group(1)
+            _n = _CN.get(_g) if _g in _CN else int(_g)
+            if 1 <= _n <= 12:
+                top_n = _n
+    except Exception:
+        pass
 
     if substituted:
         for name in substituted:
             dm.add_rejected_recipe(name)
 
-        stable_names = dm.get_stable_recipes(substituted)
+        # 只保留"当前方案"里未被替换的菜作为稳定项，
+        # 而不是从整段历史累积里捞旧菜——长对话下 recommended_recipes 会不断累积，
+        # 若取全部会导致换菜后返回远超预期数量的菜（曾出现一次返回 13 道）。
+        _rej_set = set(substituted)
+        stable_names = [r for r in _plan if r not in _rej_set]
         stable_recipes = [retriever.get_recipe_by_name(r) for r in stable_names]
         stable_recipes = [r for r in stable_recipes if r is not None]
+        # 稳定项也限制在目标数量内（优先保留最近的），给新换的菜留足名额
+        if len(stable_recipes) >= top_n:
+            stable_recipes = stable_recipes[:top_n]
+        stable_names = [r.get('name', '') for r in stable_recipes]
 
         filters = dm.get_search_filters()
         core, neg_ex = _clean_search_query(resolved_message)
@@ -2245,8 +2440,9 @@ def _handler_substitute(ctx: DialogContext):
             results = engine.filter_by_constraints(results, user_id=user_id)
 
         stable_name_set = set(stable_names)
-        new_recipes = [r for r in results if r['name'] not in stable_name_set][:5 - len(stable_recipes)]
-        ctx.recommendations = stable_recipes + new_recipes
+        new_recipes = [r for r in results if r['name'] not in stable_name_set][:top_n - len(stable_recipes)]
+        # 出口统一截断：防止任何路径拼出超过目标数量的菜
+        ctx.recommendations = (stable_recipes + new_recipes)[:top_n]
         recipe_names = [r['name'] for r in ctx.recommendations]
 
         dm.add_recommended_recipes(recipe_names)
@@ -2255,6 +2451,47 @@ def _handler_substitute(ctx: DialogContext):
                              f"{', '.join([r['name'] for r in new_recipes])}。\n"
                              f"保留的菜品：{', '.join(stable_names)}。")
     else:
+        # 食材级替换咨询："家里没有猪肉了，能换成鸡肉吗""把白糖换成代糖"
+        # 这不是换某道菜，而是询问食材替代方案，应给出友好确认与建议。
+        # 判定要收紧：只有"没有X了"（缺食材）或"X能否用Y替代"这类句式才走这里；
+        # "把X换成清淡点的"是把菜换掉，不能误入食材替换。
+        _missing_m = re.search(r'没有([\u4e00-\u9fa5]{1,6})[了]?[，,。]?', message)
+        _sub_ask = re.search(r'(?:能|可以|可不可以|能不能)[^，。？?!]{0,10}(?:换成|替代|代替|替换)'
+                             r'|(?:用|拿)[\u4e00-\u9fa5]{1,6}(?:来)?(?:替代|代替|替换)'
+                             r'|把([\u4e00-\u9fa5]{1,6})(?:换成|换作|改为|替代|替换成)[\u4e00-\u9fa5]{1,6}(?:吧|吗|行不行|可不可以|可以)?',
+                             message)
+        if _missing_m or _sub_ask:
+            src = (_missing_m.group(1) if _missing_m else '') or (_sub_ask.group(1) if _sub_ask and _sub_ask.group(1) else '')
+            tgt = ''
+            if _sub_ask:
+                _sm = re.search(r'(?:换成|换作|改为|替代|替换成|替换为|用)([\u4e00-\u9fa5]{1,6})', message)
+                if _sm:
+                    tgt = _sm.group(1)
+            # 优先命中食材替换知识库
+            tip = None
+            if src:
+                for group_rules in _INGREDIENT_SWAP_RULES.values():
+                    for triggers, t in group_rules:
+                        if any(src in tg or tg in src for tg in triggers):
+                            tip = t
+                            break
+                    if tip:
+                        break
+            if tip:
+                advice = f"可以的！{tip}。"
+            elif src and tgt:
+                advice = (f"可以的，用{tgt}替代{src}完全没问题。"
+                          f"注意{tgt}和{src}成熟时间略有差异，烹饪时适当调整火候和时长；"
+                          f"若原菜谱含较多肥肉，换成更瘦的{tgt}还能顺带降脂。")
+            elif src:
+                advice = (f"可以的！{src}可以换成鸡胸肉、鸡腿肉或豆腐来替代，"
+                          f"口感更清爽、热量也更低，注意适当调整烹饪时间。")
+            else:
+                advice = ("可以的！食材之间常可互相替代：肉类可换鸡胸肉/鱼/豆腐，"
+                          "蔬菜用同类时蔬替代即可，注意调整烹饪时间与火候。")
+            ctx.response_text = advice
+            ctx.recommendations = []
+            return
         ctx.response_text = "请告诉我您想替换哪道菜。"
         ctx.recommendations = []
 
@@ -2301,10 +2538,17 @@ def _handler_greet(ctx: DialogContext):
     ctx.recommendations = []
 
 
+def _handler_farewell(ctx: DialogContext):
+    """简单交互 Agent：道别。"""
+    ctx.response_text = "好嘞，祝您用餐愉快、身体健康！有需要随时来找我～"
+    ctx.recommendations = []
+
+
 def _register_dialog_agents() -> None:
     """把各专职 Agent 的 handler 注册进编排器（进程启动时调用一次）。"""
     ORCHESTRATOR.register_all({
         'greet': _handler_greet,
+        'farewell': _handler_farewell,
         'recommend': _handler_recommend,
         'set_preferences': _handler_preference,
         'set_preference': _handler_preference,
@@ -2327,30 +2571,41 @@ _register_dialog_agents()
 print(ORCHESTRATOR.describe())
 
 
-def _sync_special_groups_to_engine(dm, engine, user_id, user_ids):
-    """把对话管理器中本轮提取的特殊人群（孕妇/老人/儿童/哺乳期/备孕）同步进约束引擎用户档案。
+def _sync_health_to_engine(dm, engine, user_id, user_ids):
+    """把对话中提取的特殊人群与慢性疾病同步进约束引擎用户档案。
 
     约束引擎的 filter_by_constraints 与 result_verifier 只从 engine.user_profiles 读硬约束，
-    若不同步，用户在多轮对话中临时说"给老人做的"不会被过滤。
+    若不同步，非预置用户在对话里说的"给老人做的/我有高血压"不会被过滤
+    （曾出现高血压用户仍被推荐咸肉/咸鱼等禁忌菜）。
     """
     if not dm:
         return
     groups = list(dm.user_preferences.get('special_groups', []) or [])
-    if not groups:
+    diseases = list(dm.user_preferences.get('diseases', []) or [])
+    if not groups and not diseases:
         return
     targets = []
     if user_ids:
         targets = [uid for uid in user_ids if str(uid).isdigit() and 1 <= int(uid) <= 50]
-    elif user_id and str(user_id).isdigit() and 1 <= int(user_id) <= 50:
-        targets = [str(user_id)]
+    elif user_id:
+        if str(user_id).isdigit() and 1 <= int(user_id) <= 50:
+            targets = [str(user_id)]
+        else:
+            # 非预置用户：也写入档案，保证 filter_by_constraints / 验证器生效
+            targets = [str(user_id)]
     for uid in targets:
         profile = engine.user_profiles.get(uid)
         if not profile:
-            continue
+            profile = engine.user_profiles[uid] = {
+                'user_id': uid, 'allergies': [], 'diseases': [], 'special_groups': []}
         cur = profile.setdefault('special_groups', [])
         for g in groups:
             if g not in cur:
                 cur.append(g)
+        cur_d = profile.setdefault('diseases', [])
+        for d in diseases:
+            if d not in cur_d:
+                cur_d.append(d)
 
 
 @app.route('/api/dialog', methods=['POST'])
@@ -2465,6 +2720,11 @@ def dialog():
         else:
             intent = dm.detect_intent(message)  # 关键词回退
             preferences = kw_preferences
+
+        # 道别强制路由："谢谢，再见/拜拜" 等告别语即使被 LLM 误判为 greet/recommend，
+        # 也要回以道别话术，而不是再问一遍"想吃什么"。
+        if re.search(r'再见|拜拜|回聊|下次见|下次聊|走了', message):
+            intent = 'farewell'
         
         # 兜底1：强制关键词提取排除食材，保证"不吃X"始终进入 excluded_ingredients
         if not dm.user_preferences.get('excluded_ingredients'):
@@ -2525,7 +2785,7 @@ def dialog():
             intent = 'recommend'
 
         # 将本轮提取的特殊人群同步进约束引擎档案，保证 filter_by_constraints / 验证生效
-        _sync_special_groups_to_engine(dm, engine, user_id, user_ids)
+        _sync_health_to_engine(dm, engine, user_id, user_ids)
 
         ctx = DialogContext(
             dm=dm, retriever=retriever, engine=engine, llm=llm,
@@ -2583,13 +2843,16 @@ def dialog():
                 verify_profile['diseases'] = list(set(verify_profile['diseases']))
                 verify_profile['special_groups'] = list(set(verify_profile['special_groups']))
             else:
-                # 非预置用户：从对话偏好中获取过敏信息，并合并明确"不吃"的食材与特殊人群（同样视为硬约束）
+                # 非预置用户：从对话偏好中获取过敏信息，并合并明确"不吃"的食材、
+                # 特殊人群与慢性疾病（同样视为硬约束）
                 verify_profile['allergies'] = list(set(
                     dm.user_preferences.get('allergies', []) +
                     dm.user_preferences.get('excluded_ingredients', [])
                 ))
                 verify_profile['special_groups'] = list(
                     dm.user_preferences.get('special_groups', []) or [])
+                verify_profile['diseases'] = list(
+                    dm.user_preferences.get('diseases', []) or [])
             verification_report = verifier.verify(recommendations, verify_profile)
             # 硬约束违规：从推荐列表中移除违规菜品并提示用户
             if not verification_report['all_passed']:
@@ -2658,16 +2921,44 @@ def dialog():
                 _pre_before = len(recommendations)
                 recommendations = retriever._apply_filters(recommendations, _pf)
                 print(f"[dialog] 偏好硬过滤: {_pre_before}->{len(recommendations)} 道", flush=True)
-                if 0 < len(recommendations) < 5:
+                # 用户显式指定"只吃N道/来N道"时，尊重该数量，不强行补足到5道
+                _req_n = 0
+                try:
+                    _rm = re.search(
+                        r'(?:只吃|就吃|来|要|上|点|安排|配)?\s*(?<!第)([一二三四五六七八九十两]|\d{1,2})\s*道(?:菜|汤|菜吧|菜呀|菜啊)?',
+                        message)
+                    _RN = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+                           '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+                    if _rm:
+                        _g = _rm.group(1)
+                        _req_n = _RN.get(_g) if _g in _RN else int(_g)
+                except Exception:
+                    _req_n = 0
+                _target_n = _req_n if 1 <= _req_n <= 12 else 5
+                # 偏好硬过滤后可能清空（如"给老人做的"把重油菜/辣菜全滤掉）：
+                # 无论剩余 0 道还是不足目标，都要从库内重新检索合规菜补足，
+                # 避免"回复有菜名但 recommendations 为空"的空推荐。
+                if len(recommendations) < _target_n:
                     _core, _neg = _clean_search_query(message)
                     _seen = {r.get('name', '') for r in recommendations}
-                    for _r in retriever.search((_core or message), top_k=8, filters=_pf):
+                    # 先带偏好过滤补足；若因口味过滤过严仍不足，降级为无过滤全库检索
+                    # + 健康约束引擎过滤，保证不为凑数而硬塞违规菜、也不空手而归。
+                    _fill_pool = retriever.search((_core or '晚餐 家常'), top_k=15, filters=_pf)
+                    if len(_fill_pool) < (_target_n - len(recommendations)):
+                        _fill_pool = retriever.search((_core or '晚餐 家常'), top_k=20, filters=None)
+                        try:
+                            if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
+                                _fill_pool = (engine.filter_by_constraints(_fill_pool, user_ids=user_ids)
+                                             if user_ids else engine.filter_by_constraints(_fill_pool, user_id=user_id))
+                        except Exception:
+                            pass
+                    for _r in _fill_pool:
+                        if len(recommendations) >= _target_n:
+                            break
                         if _r.get('name') in _seen:
                             continue
                         recommendations.append(_r)
                         _seen.add(_r.get('name'))
-                        if len(recommendations) >= 5:
-                            break
                     print(f"[dialog] 偏好硬过滤补足后: {len(recommendations)} 道", flush=True)
                 # 若偏好过滤删除了推荐菜，重建叙述使其与最终列表严格一致
                 _post_names = {r.get('name', '') for r in recommendations}
@@ -2677,6 +2968,30 @@ def dialog():
                         response_text = _rebuilt
             except Exception as _e:
                 print(f"[dialog] 偏好硬过滤失败: {_e}", flush=True)
+
+        # ── 出口数量兜底：无论 handler / 验证拦截 / 偏好补足如何组装，
+        #    最终统一截断到用户期望的道数（尊重"只要四道/换三道"等数量指定），
+        #    防止长对话换菜等异常路径返回超出预期数量的菜。截断后重建叙述保持一致。 ──
+        try:
+            _final_n = 5
+            _rm_f = re.search(
+                r'(?:只吃|就吃|来|要|上|点|安排|配)?\s*(?<!第)([一二三四五六七八九十两]|\d{1,2})\s*道(?:菜|汤|菜吧|菜呀|菜啊)?',
+                message)
+            if _rm_f:
+                _gf = _rm_f.group(1)
+                _RN_f = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6,
+                         '七': 7, '八': 8, '九': 9, '十': 10}
+                _nf = _RN_f.get(_gf) if _gf in _RN_f else int(_gf)
+                if 1 <= _nf <= 12:
+                    _final_n = _nf
+            if len(recommendations) > _final_n:
+                print(f"[dialog] 出口数量兜底: {len(recommendations)}->{_final_n} 道", flush=True)
+                recommendations = recommendations[:_final_n]
+                _rebuilt = _build_consistent_response(recommendations)
+                if _rebuilt:
+                    response_text = _rebuilt
+        except Exception as _fe:
+            print(f"[dialog] 出口数量兜底失败: {_fe}", flush=True)
 
         # ── 按人营养摄入概览（基于验证后的最终列表，与叙述/列表完全一致）──
         nutrition_summary = ""
@@ -2875,7 +3190,7 @@ def dialog_stream():
         def generate():
             t_start = time.perf_counter()
             # 将本轮提取的特殊人群同步进约束引擎档案，保证 filter_by_constraints 生效
-            _sync_special_groups_to_engine(dm, engine, user_id, user_ids)
+            _sync_health_to_engine(dm, engine, user_id, user_ids)
             filters = dm.get_search_filters()
             core, neg_ex = _clean_search_query(message)
             if neg_ex:
@@ -2939,14 +3254,32 @@ def dialog_stream():
             
             # 多样性轮换：泛化提问（"吃什么/随便"）时，精排会把不同等价检索词的
             # 候选重新收敛到同一批高分菜。这里用 diversity_seed 在前 12 名的高质量
-            # 候选池里轮换取 5 道，保证同一用户每次"新对话"都能换一批菜。
+            # 候选池里轮换取若干道，保证同一用户每次"新对话"都能换一批菜。
+            # "多吃几道/再多来点"等表达 → 返回更多道（8道），而非固定 5 道。
+            _want_more = bool(re.search(r'多吃|多推荐|多来|再多|来几道|多几道|多上|多整|一桌|多来点',
+                                        message))
+            _top_n = 8 if _want_more else 5
+            # 数量约束解析："只吃四道/要五道菜/来三道"等 → 精确按该数量返回
+            try:
+                _cnt_m = re.search(
+                    r'(?:只吃|就吃|来|要|上|点|安排|配)?\s*(?<!第)([一二三四五六七八九十两]|\d{1,2})\s*道(?:菜|汤|菜吧|菜呀|菜啊)?',
+                    message)
+                _CN2 = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+                        '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+                if _cnt_m:
+                    _g2 = _cnt_m.group(1)
+                    _n2 = _CN2.get(_g2) if _g2 in _CN2 else int(_g2)
+                    if 1 <= _n2 <= 12:
+                        _top_n = _n2
+            except Exception:
+                pass
             _is_vague_q = (not core_clean) or (core_clean in _vague)
-            if _is_vague_q and dm and len(results) > 5:
+            if _is_vague_q and dm and len(results) > _top_n:
                 _pool = results[:12]
-                _off = (dm.diversity_seed * 5) % len(_pool)
-                recommendations = (_pool[_off:] + _pool[:_off])[:5]
+                _off = (dm.diversity_seed * _top_n) % len(_pool)
+                recommendations = (_pool[_off:] + _pool[:_off])[:_top_n]
             else:
-                recommendations = results[:5]
+                recommendations = results[:_top_n]
             # — 追加约束时保留历史推荐（复用与 Agent 主路径一致的逻辑） —
             # 用户追加"不吃鱼"等约束时，不应把已认可的历史菜全换掉：
             # 把仍符合当前检索过滤条件的历史菜置顶并入。
@@ -2982,9 +3315,9 @@ def dialog_stream():
                             if _n and _n not in _mn:
                                 _merged.append(_r)
                                 _mn.add(_n)
-                            if len(_merged) >= 5:
+                            if len(_merged) >= _top_n:
                                 break
-                        recommendations = _merged[:5]
+                        recommendations = _merged[:_top_n]
                         print(f"[stream] 并入历史保留 {len(_kept_list)} 道并置顶", flush=True)
             except Exception as _e:
                 print(f"[stream] 历史保留失败: {_e}", flush=True)

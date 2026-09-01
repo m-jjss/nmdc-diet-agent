@@ -751,14 +751,22 @@ def chat_fn(message: str, history: list, user_id: str):
         session = get_or_create_session(user_id)
         for md in session.send_stream(message.strip()):
             if _USE_DICT:
-                history[-1]["content"] = md
+                # 关键：Gradio 5 messages 模式下，若原地修改同一个 assistant dict
+                # （history[-1]["content"]=md），组件会基于"同一对象被复用"误判，
+                # 出现把上一条助手消息重复渲染/残留的 bug。
+                # 改为每次生成"新的 assistant dict"，保证每次 yield 的列表元素引用都不同。
+                history = history[:-1] + [
+                    {"role": "assistant", "content": md}
+                ]
             else:
                 history[-1] = (message, md)
             yield history, ""
     except Exception as e:
         err = f"**[错误]** {e}"
         if _USE_DICT:
-            history[-1]["content"] = err
+            history = history[:-1] + [
+                {"role": "assistant", "content": err}
+            ]
         else:
             history[-1] = (message, err)
         yield history, ""

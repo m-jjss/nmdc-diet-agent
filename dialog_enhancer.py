@@ -38,7 +38,8 @@ class DialogManager:
             'cuisine_preference': None,   # 菜系偏好
             'difficulty': None,            # 制作难度：简单/中等/复杂
             'cooking_method': None,        # 偏好烹饪方式：炸/烤/蒸/炖/炒/煎/煮等
-            'special_groups': []           # 特殊人群：儿童/老人/孕妇/哺乳期/备孕等（硬约束）
+            'special_groups': [],          # 特殊人群：儿童/老人/孕妇/哺乳期/备孕等（硬约束）
+            'diseases': []                 # 慢性疾病：高血压/糖尿病/高血脂/痛风等（硬约束）
         }
         
         # 当前对话状态
@@ -128,10 +129,25 @@ class DialogManager:
             'cuisine_preference': None,
             'difficulty': None,
             'cooking_method': None,
-            'special_groups': []
+            'special_groups': []           # 特殊人群：儿童/老人/孕妇/哺乳期/备孕等（硬约束）
         }
+        extracted['diseases'] = []  # 慢性疾病：高血压/糖尿病/高血脂/痛风等（硬约束）
         
         message_lower = user_message.lower()
+        
+        # 识别慢性疾病（谁有健康问题）——高血压/糖尿病/高血脂/痛风/高尿酸等。
+        # 硬约束：用户在对话中声明疾病后，后续推荐必须避开对应禁忌食材。
+        # 注意：只按明确的疾病声明触发，不因"少盐/少糖"等偏好词推断疾病。
+        disease_map = {
+            '高血压': ['高血压', '血压高', '血压偏高'],
+            '糖尿病': ['糖尿病', '血糖高', '高血糖', '血糖偏高'],
+            '高血脂': ['高血脂', '血脂高', '血脂偏高', '高胆固醇', '胆固醇高'],
+            '痛风': ['痛风', '高尿酸', '尿酸高', '尿酸偏高'],
+        }
+        for dis, kws in disease_map.items():
+            if any(k in message_lower for k in kws):
+                if dis not in extracted['diseases']:
+                    extracted['diseases'].append(dis)
         
         # 识别特殊人群（给谁吃 / 谁不能吃）——儿童/老人/孕妇/哺乳期/备孕等
         # 句式：给老人做的、适合小孩吃、有没有孕妇不能吃的、家里有小朋友、孕妇餐……
@@ -189,7 +205,10 @@ class DialogManager:
                 ingredients = re.split(r'[、和与还有]', match.strip())
                 for ing in ingredients:
                     ing = ing.strip()
-                    if ing and len(ing) <= 10 and ing not in extracted['excluded_ingredients']:
+                    # 过滤程度/方式虚词："不要太油腻""不要太多油"中的"太油腻/太多"不是食材
+                    if ing and len(ing) <= 10 and ing not in extracted['excluded_ingredients'] \
+                            and ing not in ('太油腻', '太油', '太咸', '太甜', '太辣', '太多',
+                                            '太清淡', '太重', '太重口', '太复杂', '太麻烦'):
                         extracted['excluded_ingredients'].append(ing)
         
         # 识别饮食偏好
@@ -379,9 +398,17 @@ class DialogManager:
                 self.user_preferences['dietary_goals'].append(goal)
         
         # 合并排除食材（追加）
+        # 过滤非食材虚词：LLM/关键词提取可能把"不要重复/做法不要重复/太多油/太重口"
+        # 中的程度/方式副词误判为排除食材（如"重复"），一旦进入 excluded_ingredients
+        # 会被 _apply_filters 当字面关键词过滤掉全部候选，导致推荐被清空。
+        _NON_FOOD_WORDS = ('重复', '太多', '太多油', '太重', '太重口', '太油', '太油腻', '太咸', '太甜',
+                           '太辣', '一样', '相同', '类似', '复杂的', '麻烦的', '简单点')
         for ing in new_preferences.get('excluded_ingredients', []):
-            if ing not in self.user_preferences['excluded_ingredients']:
-                self.user_preferences['excluded_ingredients'].append(ing)
+            ing_strip = str(ing).strip()
+            if not ing_strip or ing_strip in _NON_FOOD_WORDS:
+                continue
+            if ing_strip not in self.user_preferences['excluded_ingredients']:
+                self.user_preferences['excluded_ingredients'].append(ing_strip)
         
         # 更新烹饪时间限制（覆盖）
         if new_preferences.get('cooking_time_limit') is not None:
@@ -412,6 +439,12 @@ class DialogManager:
         for g in new_preferences.get('special_groups', []):
             if g not in self.user_preferences['special_groups']:
                 self.user_preferences['special_groups'].append(g)
+        
+        # 合并慢性疾病（追加，不覆盖）
+        self.user_preferences.setdefault('diseases', [])
+        for dis in new_preferences.get('diseases', []):
+            if dis not in self.user_preferences['diseases']:
+                self.user_preferences['diseases'].append(dis)
     
     def _detect_intent_keyword(self, user_message: str) -> str:
         """
@@ -450,6 +483,7 @@ class DialogManager:
         
         # 意图关键词映射（按优先级排序）
         intent_keywords = {
+            'farewell': ['再见', '拜拜', '回聊', '下次见', '下次聊', '走了'],
             'greet': ['你好', '嗨', '您好', '早上好', '晚上好', '在吗'],
             'cancel': ['取消', '不要了', '重来', '重新开始', '算了', '不选了'],
             'confirm': ['好的', '确认', '就要这个', '可以', '不错', '挺好', '就这个', '确定'],
@@ -663,6 +697,7 @@ class DialogManager:
             'difficulty': self.user_preferences['difficulty'],
             'cooking_method': self.user_preferences['cooking_method'],
             'special_groups': self.user_preferences.get('special_groups', []),
+            'diseases': self.user_preferences.get('diseases', []),
             'dialog_turns': self.turn_count,
             'rejected_recipes': self.rejected_recipes
         }
@@ -746,7 +781,15 @@ class DialogManager:
                 filters['low_sugar'] = True
             if any(k in goal for k in ['增肌', '高蛋白']):
                 filters['high_protein'] = True
-        
+
+        # 慢性疾病 → 检索初筛（软过滤，硬过滤由约束引擎 filter_by_constraints 兜底）
+        # 糖尿病/高血糖→低糖；高血脂→低脂；高血压/痛风靠约束引擎禁忌词表处理。
+        _diseases = self.user_preferences.get('diseases', [])
+        if any(d in ('糖尿病', '高血糖') for d in _diseases):
+            filters['low_sugar'] = True
+        if any(d in ('高血脂', '高胆固醇') for d in _diseases):
+            filters['low_fat'] = True
+
         # 烹饪时间限制
         if self.user_preferences.get('cooking_time_limit'):
             filters['max_cooking_time'] = self.user_preferences['cooking_time_limit']
@@ -790,8 +833,10 @@ class DialogManager:
         if not self.recommended_recipes:
             return message
         
-        # 获取最近推荐的菜品列表（按时间顺序）
-        recent_recipes = self.recommended_recipes[-5:]  # 最多保留最近5个
+        # 获取最近推荐的菜品列表（优先"当前方案"，即最近一轮实际推荐；
+        # 与 add_recommended_recipes 维护的 last_recommendation 保持一致，
+        # 避免长对话下累积历史与当前方案错位导致"第二个/刚才那几个"解析落空）
+        recent_recipes = (self.last_recommendation or self.recommended_recipes)[-5:]  # 最多保留最近5个
         
         # 代词引用替换
         pronoun_patterns = [

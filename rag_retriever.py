@@ -666,8 +666,17 @@ class RAGRetriever:
         # 排除指定食材（在菜名、食材、描述、做法中做子串检查）
         exclude_ingredients = filters.get('exclude_ingredients', [])
         if exclude_ingredients:
-            # 类别词展开：如"海鲜"要能排除鱼虾蟹贝等具体菜品，而不是只匹配字面"海鲜"
-            category_expansion = {
+            # 非食材虚词兜底：即使上游（LLM/关键词）漏过滤了"重复/太多"等程度副词，
+            # 这里也不能把它们当字面关键词过滤——否则会把候选全部清空（如"做法不要重复"）。
+            _NON_FOOD_FILTER = ('重复', '太多', '太多油', '太重', '太重口', '太油', '太咸', '太甜',
+                                '太辣', '一样', '相同', '类似', '复杂', '麻烦')
+            exclude_ingredients = [e for e in exclude_ingredients
+                                   if str(e).strip() and str(e).strip() not in _NON_FOOD_FILTER]
+            if not exclude_ingredients:
+                exclude_ingredients = []
+            if exclude_ingredients:
+                # 类别词展开：如"海鲜"要能排除鱼虾蟹贝等具体菜品，而不是只匹配字面"海鲜"
+                category_expansion = {
                 '海鲜': ['海鲜', '鱼', '虾', '蟹', '贝', '蚝', '蛤', '鱿', '鳗', '鲍', '牡蛎', '海参', '海带', '紫菜', '鱼片', '鱼柳', '鱼头', '鱼丸', '鱼蛋', '虾仁', '虾滑', '虾米', '蟹肉', '蟹黄', '带子', '扇贝', '蛏子', '花甲', '蛤蜊', '三文鱼', '鳕鱼', '鲈鱼', '黄鱼', '鲳鱼', '银鱼', '带鱼'],
                 '鱼': ['鱼', '鱼片', '鱼柳', '鱼块', '鱼头', '鱼丸', '鱼蛋', '三文鱼', '鳕鱼', '鲈鱼', '黄鱼', '鲳鱼', '鲷鱼', '带鱼', '银鱼', '罗非鱼', '龙利鱼', '巴沙鱼', '金枪鱼'],
                 '虾': ['虾', '虾仁', '虾滑', '虾米', '明虾', '基围虾', '小龙虾'],
@@ -697,7 +706,14 @@ class RAGRetriever:
 
             def _excluded(r):
                 name_l = str(r.get('name', '')).lower()
-                ing_l = ' '.join(str(i).lower() for i in r.get('ingredients', []))
+                _ing = r.get('ingredients', '')
+                if isinstance(_ing, str):
+                    # ingredients 是字符串（如"主料：…香菜…"）：必须整体匹配。
+                    # 若用 [str(i) for i in 字符串] 会逐字符遍历，把"香菜"拆成单字，
+                    # 导致"我不吃香菜"这类排除约束全部失效（曾漏推含香菜菜）。
+                    ing_l = _ing.lower()
+                else:
+                    ing_l = ' '.join(str(i).lower() for i in _ing)
                 desc_l = str(r.get('description', '')).lower()
                 meth_l = str(r.get('method', '')).lower()
                 return any(ex in name_l or ex in ing_l or ex in desc_l or ex in meth_l
@@ -714,15 +730,22 @@ class RAGRetriever:
                 if str(r.get('name', '')).lower() not in exclude_set
             ]
         
-        # 偏好烹饪方式过滤（"有没有炸的/来点烤的"）：只保留用该方式烹饪的菜
+        # 偏好烹饪方式过滤（"有没有炸的/来点烤的"）：保留用其中任一方式烹饪的菜。
+        # cooking_method 可能是列表（"有炒的有蒸的有炖的"表示集合，任一命中即可），
+        # 也可能是单个字符串；把它展开为方法集合做"任一命中"过滤，
+        # 避免把列表整体当单个关键词导致不匹配任何菜（曾导致推荐被全部清空）。
         preferred_method = filters.get('preferred_method')
         if preferred_method:
-            pm = str(preferred_method).lower()
+            if isinstance(preferred_method, (list, tuple, set)):
+                _pm_set = {str(m).lower() for m in preferred_method if m}
+            else:
+                _pm_set = {str(preferred_method).lower()}
             filtered = [
                 r for r in filtered
-                if pm in str(self._get_cooking_method(r)).lower()
-                or pm in str(r.get('method', '')).lower()
-                or pm in str(r.get('name', '')).lower()
+                if any(pm in str(self._get_cooking_method(r)).lower()
+                       or pm in str(r.get('method', '')).lower()
+                       or pm in str(r.get('name', '')).lower()
+                       for pm in _pm_set)
             ]
         
         # 必须包含指定标签
@@ -752,13 +775,22 @@ class RAGRetriever:
         
         # 口味偏好过滤
         if filters.get('low_fat'):
-            high_fat_methods = ['油炸', '油煎', '红烧', '油焖', '爆炒', '干煸', '回锅']
+            # 高脂做法：含"油焖/油炸/红烧/干锅/水煮/麻辣香锅/辣子"等重油菜
+            high_fat_methods = ['油炸', '油煎', '红烧', '油焖', '爆炒', '干煸', '回锅',
+                                '干锅', '水煮肉', '水煮鱼', '麻辣香锅', '辣子鸡', '辣子',
+                                '红烧肉', '铁板', '干炸', '酥炸', '糖醋里脊',
+                                '烤鱼', '石锅', '焗饭', '铁板烧', '香锅', '酱爆', '油爆',
+                                '炸鸡', '炸猪排', '天妇罗', '炙烤肥牛', '烤羊排', '烧肉']
             # 高脂食材（含腊味/肥肉/油炸类），清淡/低脂/减肥时排除
             high_fat_ings = ['五花肉', '肥肉', '肥牛', '猪油', '黄油', '奶油', '培根',
-                             '腊肉', '腊肠', '肥肠', '猪蹄', '蹄髈', '羊油', '牛油', '酥肉']
+                             '腊肉', '腊肠', '肥肠', '猪蹄', '蹄髈', '羊油', '牛油', '酥肉',
+                             '猪皮', '鸡皮', '油渣']
             filtered = [
                 r for r in filtered
-                if not any(m in str(r.get('description', '')).lower() or
+                # 高脂做法（油炸/红烧/油焖/干锅/麻辣香锅等）查菜名+描述+做法+标签，
+                # 避免"油焖小龙虾""家常麻辣香锅"这类菜名体现重油但描述未提及而漏网
+                if not any(m in str(r.get('name', '')).lower() or
+                          m in str(r.get('description', '')).lower() or
                           m in str(r.get('method', '')).lower() or
                           m in ' '.join(str(t) for t in r.get('tags', [])).lower()
                           for m in high_fat_methods)
@@ -771,7 +803,8 @@ class RAGRetriever:
             spicy_keywords = ['辣椒', '花椒', '辣', '麻辣', '香辣']
             filtered = [
                 r for r in filtered
-                if not any(s in str(r.get('description', '')).lower() or
+                if not any(s in str(r.get('name', '')).lower() or
+                          s in str(r.get('description', '')).lower() or
                           s in str(r.get('method', '')).lower() or
                           s in ' '.join(str(t) for t in r.get('tags', [])).lower() or
                           s in ' '.join(self._safe_ingredients(r))
@@ -784,7 +817,9 @@ class RAGRetriever:
             sweet_ints = ['紫薯', '芋泥', '红薯', '地瓜', '山药', '南瓜', '香蕉', '芒果', '枣泥', '红豆沙']
             filtered = [
                 r for r in filtered
-                if not any(s in ' '.join([str(i).lower() for i in r.get('ingredients', [])])
+                # 用 _safe_ingredients（兼容字符串/列表）判断，避免 ingredients 为字符串
+                # 时逐字符遍历导致"糖/蜂蜜"等甜味词检测失效
+                if not any(s in ' '.join(self._safe_ingredients(r))
                           for s in sweet_addeds)
                 # 名称/标签/描述含"甜/甜品"或配料含高甜食材 → 排除（如"紫薯芋泥切糕"标"甜"）
                 if not (any(f in str(r.get('name', '')).lower()
