@@ -1729,6 +1729,46 @@ def _format_detail_full(recipe):
             f"照着这个顺序做就好啦，有什么拿不准可以再问我～还有其他想吃的也欢迎告诉我哦")
 
 
+def _best_prefix_len(a: str, b: str) -> int:
+    """计算 a 与 b 的最长公共子串长度（用于菜名简称/变体模糊匹配）。"""
+    if not a or not b:
+        return 0
+    best = 0
+    # 限制窗口长度，降低 O(n^2) 开销；菜名一般不超过 12 字
+    max_m = min(len(a), len(b), 12)
+    for length in range(max_m, 0, -1):
+        found = False
+        for i in range(0, len(a) - length + 1):
+            if a[i:i + length] in b:
+                best = length
+                found = True
+                break
+        if found:
+            break
+    return best
+
+
+def _strip_detail_phrasing(message: str) -> str:
+    """从"怎么做好吃/的烹饪步骤"等问法中剥离问法词，保留菜名关键片段。
+    例如"西红柿炒鸡蛋怎么做好吃" → "西红柿炒鸡蛋"；
+    "请给我鱼香肉丝的烹饪步骤" → "鱼香肉丝的烹饪步骤"后再去尾残词 → "鱼香肉丝"。
+    若用户在句子中间/末尾有非菜词语，简单去首尾外壳后返回中段。"""
+    m = message.strip()
+    # 去掉句首的礼貌/请求外壳
+    m = re.sub(r'^(请|麻烦|帮我|帮忙|你好|请问|能不能|可以|我想|想|请为我|能不能给我)', '', m)
+    # 先去掉句式外壳词（句中任意位置）：怎么/如何/怎样/做法/步骤/蒸多久/多久/怎么做好吃等，
+    # 避免残留问法词干扰菜名匹配（如"清蒸鲈鱼需要蒸多久"中含"蒸多久"）。
+    m = re.sub(r'(怎么做|怎么做好吃|怎么做才好吃|怎么烧|怎么煮|怎么炖|怎么蒸|怎么煎|怎么炒|怎么弄|要怎么做|怎样做|咋做'
+               r'|做法步骤|烹饪步骤|具体步骤|详细做法|怎么做菜|的做法|烹饪方法|做法|步骤'
+               r'|蒸多久|煮多久|煎多久|炸多久|烧多久|炖多久|烤多久|炒多久|需要多久|要蒸|要煮|要炖|要炸|要煎|要烤|要炒'
+               r'|怎么做|怎么|如何|怎样|多久|什么时候|放多久|下锅多久|要多久)', '', m)
+    m = re.sub(r'(的做法|的烹饪|的详细做法|的步骤|具体步骤|烹饪方法)' r'$', '', m)
+    # 去掉句首/句尾可能的"一道""简单的""想要"等残留修饰
+    m = re.sub(r'^(一道|一个|一|给我|来|做|给我做|简单的|家常的|普通的|简单的)', '', m)
+    m = m.strip(' ，。、？！!?：:')
+    return m
+
+
 def _handler_detail(ctx: DialogContext):
     """菜谱详情 Agent：先给简略版，用户再追问"详细"时展开完整步骤。"""
     message = ctx.message.strip()
@@ -1748,11 +1788,61 @@ def _handler_detail(ctx: DialogContext):
 
     # 1) 优先从当前消息定位菜名（精确包含或名字包含在句中）
     target = None
+    best_score = 0
+    _detail_reduced = _strip_detail_phrasing(message)
     for recipe in retriever.recipes:
         name = recipe.get('name', '')
         if name and name in message:
             target = recipe
+            best_score = 999
             break
+        # 兼容简称/变体：简化库名后，算用户关键片段与库名的最长公共子串，取最高分那一档
+        if not name:
+            continue
+        name_core = re.sub(r'[（(][^）)]*[）)]', '', name).replace(' ', '')
+        score = _best_prefix_len(_detail_reduced, name_core)
+        if score > best_score:
+            best_score = score
+            target = recipe
+    # 1b) 仅当确实有较强命中（公共片段>=2）才采用模糊匹配结果，否则视为未定位菜名。
+    #     阈值取2是为了兼容"麻婆豆腐 vs 麻婆蛋羹"这类只有2字共同的近似菜名；过低会误伤。
+    if target is None or best_score < 2:
+        target = None
+    # 1c) 语义回退：仍未定位到菜名时，把整句关键片段交给检索器，从候选里挑与
+    #     关键片段关联最强的一个，避免"可乐鸡翅"命中毫不相干的"红糖姜片干"。
+    if target is None:
+        reduced = _detail_reduced or message
+        if reduced:
+            if len(reduced) <= 6:
+                # 短关键词（如"麻婆豆腐""可乐鸡翅"）：优先挑菜名里含该关键词任一字的
+                for cand in retriever.search(reduced, top_k=10, filters=None):
+                    name = cand.get('name', '')
+                    if not name:
+                        continue
+                    name_core = re.sub(r'[（(][^）)]*[）)]', '', name).replace(' ', '')
+                    if any(c in name_core for c in reduced):
+                        target = cand
+                        break
+                # 都没有直接包含时，选与关键词公共子串最长的一个作兜底
+                if target is None:
+                    best_sc, best_c = 0, None
+                    for cand in retriever.search(reduced, top_k=10, filters=None):
+                        name = cand.get('name', '')
+                        if not name:
+                            continue
+                        name_core = re.sub(r'[（(][^）)]*[）)]', '', name).replace(' ', '')
+                        s = _best_prefix_len(reduced, name_core)
+                        if s > best_sc:
+                            best_sc, best_c = s, cand
+                    target = best_c
+            else:
+                # 长句（如"怎么做一道简单的炒青菜"）：取相关性最高的候选
+                for cand in retriever.search(reduced, top_k=8, filters=None):
+                    name = cand.get('name', '')
+                    if not name:
+                        continue
+                    target = cand
+                    break
     # 2) 消息未点名菜名时，承接对话上下文：取最近一次推荐（当前方案）里的菜
     if target is None:
         cand_names = []
