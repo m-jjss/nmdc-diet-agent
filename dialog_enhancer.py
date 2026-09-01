@@ -402,6 +402,7 @@ class DialogManager:
             self.user_preferences['cooking_method'] = new_preferences['cooking_method']
         
         # 合并特殊人群（追加，不覆盖）
+        self.user_preferences.setdefault('special_groups', [])
         for g in new_preferences.get('special_groups', []):
             if g not in self.user_preferences['special_groups']:
                 self.user_preferences['special_groups'].append(g)
@@ -990,8 +991,17 @@ class DialogManager:
         if not data:
             return
         self.history = data.get('history', []) or []
-        self.user_preferences = {**(self.user_preferences), **(
-            data.get('user_preferences', {}) or {})}
+        # 从磁盘恢复的旧对象可能缺少部分默认键，用 setdefault 逐项补齐，
+        # 保证后续对 user_preferences 的直接索引都安全。
+        for k, v in self.user_preferences.items():
+            if k in (data.get('user_preferences') or {}):
+                cur = data['user_preferences'].get(k)
+                # 列表型字段：合并时也兼容旧版本缺键情况
+                if cur is None:
+                    cur = v
+                self.user_preferences[k] = cur
+        for k in ('special_groups', 'excluded_ingredients'):
+            self.user_preferences.setdefault(k, [])
         self.dialog_state = data.get('dialog_state', 'initial') or 'initial'
         self.turn_count = data.get('turn_count', 0) or 0
         self.recommended_recipes = data.get('recommended_recipes', []) or []
