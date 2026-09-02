@@ -196,6 +196,7 @@ class DialogContext:
     user_ids: list = None
     preferences: dict = None
     search_query: str = ""   # LLM 改写的语义检索查询（口语/复合需求 -> 可检索中文关键词）
+    intent: str = ""         # 本次分发的意图名（供 handler 内部判断）
 
     # —— 输出侧 ——
     response_text: str = ""
@@ -203,3 +204,4 @@ class DialogContext:
     agent_result: dict = None      # 若该意图走 Agent 路径，记录其返回（ticks/耗时可追溯）
     t_llm_dialog: float = 0.0
     ask_question: str = None
+    self_correct_hint: str = None   # 自纠错：上一轮质量不佳且本轮重复追问时的纠偏话术
