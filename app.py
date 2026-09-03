@@ -1206,6 +1206,28 @@ def _is_meat_recipe(recipe: dict) -> bool:
     return bool(_main_rx.search(text)) or bool(_meat_rx.search(text))
 
 
+# 饮品/汤粥类判定：菜名以汤/羹/粥/茶/汁/浆/奶/饮/露/糖水等结尾，视为可"喝"的菜品。
+# 用于加餐/饮品意图（"下午有点饿，能喝点什么"）出口过滤，避免推到红烧肉这类硬菜。
+_DRINK_NAME_SUFFIXES = ('汤', '羹', '粥', '茶', '汁', '浆', '奶昔', '饮', '露', '糖水',
+                        '糊', '双皮奶', '甜品', '奶', '酸奶', '豆浆')
+
+
+def _is_drink_recipe(recipe: Dict) -> bool:
+    name = (recipe.get('name', '') or '').strip()
+    return any(name.endswith(s) for s in _DRINK_NAME_SUFFIXES)
+
+
+# 冷菜/凉菜判定：与评分口径一致（菜名/做法/标签含凉拌/沙拉/冷/冰/冻/醉/糟等）。
+# 用于出口"冷热搭配"平衡——普通家常桌若整桌都是热菜（蒸/炖/汤），搭配合理性不足。
+_COLD_KEYWORDS = ('凉拌', '沙拉', '刺身', '冰', '冻', '醉', '糟', '冷盘', '冷菜')
+
+
+def _is_cold_recipe(recipe: Dict) -> bool:
+    _t = ((recipe.get('name', '') or '') + (recipe.get('steps', '') or '')
+          + (recipe.get('label', '') or ''))
+    return any(k in _t for k in _COLD_KEYWORDS)
+
+
 def _trim_by_relevance(recommendations: list, core_query: str, retriever, max_n: int = 5,
                        filters: Optional[Dict] = None,
                        engine=None, user_id: str = None, user_ids: list = None) -> list:
@@ -1359,7 +1381,8 @@ def _build_multi_user_note(user_ids: list, engine) -> str:
 
 def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = None,
                        dm=None, retriever=None, engine=None, llm=None,
-                       max_iterations: int = 2, search_query: str = "", top_n: int = 5) -> dict:
+                       max_iterations: int = 2, search_query: str = "", top_n: int = 5,
+                       force_skip_merge: bool = False, raw_user_message: str = None) -> dict:
     """
     Agent模式：ReAct循环驱动的菜谱推荐
 
@@ -1374,6 +1397,10 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
         engine: 约束引擎
         llm: LLM客户端
         max_iterations: 最大ReAct迭代次数
+        force_skip_merge: 由调用方（如 _handler_more 传拼接上下文时）强制跳过
+            历史保留菜并入——此时 user_message 是拼接串，内部重复检测会失效
+        raw_user_message: 用户的原始消息（不拼接上下文），用于核心食材提取与
+            单一食材均衡；_handler_more 等传拼接串的调用方必须传入
 
     Returns:
         {
@@ -1403,6 +1430,47 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                 top_n = _n
     except Exception:
         pass
+
+    # 荤素拆分数量："两个荤两个素/两荤两素/2荤2素/三个荤菜两个素菜"。
+    # 用户明确指定荤素各几道时，除了总道数（荤+素），还要在出口保证比例。
+    _meat_veg_target = None
+    try:
+        _msg_src = raw_user_message if raw_user_message else user_message
+        _CN_NUM2 = {'一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5,
+                    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+        _mm = re.search(r'([一二两三四五六七八九十两]|\d{1,2})\s*个?\s*(?:荤|肉)\s*(?:菜)?', _msg_src)
+        _vm = re.search(r'([一二两三四五六七八九十两]|\d{1,2})\s*个?\s*素\s*(?:菜)?', _msg_src)
+        if _mm and _vm:
+            _mn = _CN_NUM2.get(_mm.group(1)) if _mm.group(1) in _CN_NUM2 else int(_mm.group(1))
+            _vn = _CN_NUM2.get(_vm.group(1)) if _vm.group(1) in _CN_NUM2 else int(_vm.group(1))
+            if 1 <= _mn <= 8 and 1 <= _vn <= 8:
+                _meat_veg_target = (_mn, _vn)
+                top_n = _mn + _vn
+                print(f"[Agent] 荤素数量约束: {_mn}荤{_vn}素，总{top_n}道", flush=True)
+    except Exception:
+        _meat_veg_target = None
+
+    # 加餐/饮品意图："下午有点饿，能喝点什么/想喝杯奶茶/来碗汤"等。
+    # 命中后进入"饮品模式"：检索以汤粥羹茶为主、出口过滤为可喝的菜，避免推到硬菜。
+    try:
+        _drink_src = raw_user_message if raw_user_message else user_message
+        _drink_mode = bool(re.search(
+            r'喝点什么|喝什么|喝点|喝些|想喝|要喝|喝杯|喝一杯|来杯|来碗汤|喝汤|想喝汤'
+            r'|饮品|饮料|果汁|奶茶|豆浆|酸奶|豆奶|汤水|下午茶|糖水|炖汤|煲汤|茶水|泡茶'
+            r'|奶昔|酸梅汤|绿豆汤|喝的', _drink_src))
+        if _drink_mode and not search_query:
+            search_query = '汤 粥 羹 饮品 果汁 茶 甜品'
+    except Exception:
+        _drink_mode = False
+
+    # 纯汤宴意图："只想喝汤/来一桌汤/全都是粥"等——这类用户就是要整桌汤粥，
+    # 出口的"汤类数量上限"应对其豁免（否则会把用户想要的汤宴强行换掉）。
+    try:
+        _all_soup_intent = bool(re.search(
+            r'只(?:想|要|喝)(?:汤|粥|羹)|(?:来|点|上|要)(?:一桌|一锅|一煲|一盆|整桌|全套|全|都)(?:汤|粥|羹)'
+            r'|(?:都|全|只)(?:是|要|想)?(?:喝)?(?:汤|粥|羹)|汤宴|汤锅|全汤|全粥', message))
+    except Exception:
+        _all_soup_intent = False
 
     # 构建系统提示
     pref_summary = _json.dumps(dm.user_preferences if dm else {}, ensure_ascii=False)
@@ -1523,7 +1591,7 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
     _kept = []
     # 重复追问判定：用户几乎原样/换说法重复上一句（暗示上轮没答好或想换一批），
     # 此时"并入历史保留菜"反而复读上一批菜 → 跳过 _kept，强制给一批不同的菜。
-    _is_repeat_this_turn = _detect_repeat(dm, user_message, None) if dm else False
+    _is_repeat_this_turn = force_skip_merge or (_detect_repeat(dm, user_message, None) if dm else False)
     _skip_merge_history = _is_repeat_this_turn
     try:
         if dm and dm.recommended_recipes:
@@ -1596,19 +1664,26 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
     #    命中同一核心食材的菜占多数（≥ 2/3 或 ≥ 3 道）就触发均衡——
     #    保留 2 道主菜，其余用全库"荤素搭配"补足，一餐有主有配、营养均衡，而不是"土豆全席"。 —
     try:
-        _core_food = (_clean_search_query(user_message)[0] if user_message else '') or ''
+        # 焦点食材提取优先用原始消息（拼接上下文的 user_message 会污染核心词提取）
+        _food_src = raw_user_message if raw_user_message else user_message
+        _core_food = (_clean_search_query(_food_src)[0] if _food_src else '') or ''
         # 焦点食材的稳健提取：_clean_search_query 可能残留口语动词/数量词
         # （如"今晚就想吃土豆，来三道"清洗后为"就想吃土豆来三道"，无法匹配菜名），
         # 这里进一步剥掉残词，锚定真正想吃的食材词。
         if _core_food:
             _cf = _core_food
-            # 先剥时间词，再剥口语动词前缀，最后去结尾数量词：
-            # "今晚就想吃土豆，来三道" -> "今晚就想吃土豆来三道"
-            #   -> "就想吃土豆来三道" -> "土豆来三道" -> "土豆"
+            # 先剥时间词，再剥口语动词前缀，最后去数量短语：
+            # "今晚就想吃土豆，来三道" -> "就想吃土豆来三道"
+            #   -> "土豆来三道" -> "土豆"
+            # "再要三道土豆" -> "三道土豆" -> "土豆"；"土豆还是要三道" -> "土豆还是要" -> "土豆"
             _cf = re.sub(r'^\s*(?:今晚|今天|明天|中午|晚上|早上|下午|今|明|夜|\d+点|刚|刚刚)+', '', _cf)
-            _cf = re.sub(r'^(就|想|要|来|换|点|整|弄|做|吃|喝|上|配|先|再)+', '', _cf)
+            _cf = re.sub(r'^(就|想|要|来|换|点|整|弄|做|吃|喝|上|配|先|再|还是|再来|想要|需要)+', '', _cf)
             _cf = re.sub(r'^(就|想|要|来|换|吃|喝)+', '', _cf)
-            _cf = re.sub(r'(?:来|换|点|要|上)?[一二两三四五六七八九十两]{1,2}?(?:道|菜|碗|盘|份)?$', '', _cf)
+            # 开头数量短语（"三道土豆" -> "土豆"），量词后必须还有汉字，避免误删菜名主体
+            _cf = re.sub(r'^[一二两三四五六七八九十两]?\d*?(?:道|菜|碗|盘|份|个)(?=[\u4e00-\u9fff])', '', _cf)
+            _cf = re.sub(r'(?:来|换|点|要|上|再)?[一二两三四五六七八九十两]{1,2}?(?:道|菜|碗|盘|份)?$', '', _cf)
+            # 夹层连接词（"土豆还是要" -> "土豆"）
+            _cf = re.sub(r'(?:还是|再要|再来|想要|需要|还要|先来|再来点)+', '', _cf)
             _cf = re.sub(r'[，。、,;；!！?？\s]+', '', _cf).strip()
             if len(_cf) >= 2 and len(_cf) <= 6 and _cf != _core_food:
                 _core_food = _cf
@@ -1645,6 +1720,34 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
                 print(f"[Agent] 单一食材[{_core_food}]集中{len(_food_hits)}/{_n_now}道，均衡后: "
                       f"{[r.get('name') for r in _balanced]}", flush=True)
                 recommendations = _balanced[:top_n]
+            # 自纠错补充：重复追问且用户仍点名核心食材时，不能让方案彻底丢失该食材——
+            # 用户"再要三道土豆"应至少保留 1 道土豆（换新的做法），而不是全给不相干菜。
+            if _skip_merge_history:
+                _food_in_plan = [r for r in recommendations
+                                 if _core_food in (r.get('name', '') or '')
+                                 or _core_food in str(r.get('ingredients', ''))]
+                if not _food_in_plan:
+                    _cf_filters = dict(dm.get_search_filters()) if dm else {}
+                    try:
+                        _cf_pool = retriever.search(f'{_core_food} 菜', top_k=12, filters=_cf_filters)
+                        if user_ids:
+                            _cf_pool = engine.filter_by_constraints(_cf_pool, user_ids=user_ids)
+                        elif user_id:
+                            _cf_pool = engine.filter_by_constraints(_cf_pool, user_id=user_id)
+                        _excl_names = set(getattr(dm, 'last_recommendation', []) or []) \
+                            | set(getattr(dm, 'rejected_recipes', []) or [])
+                        _pick = None
+                        for _r in _cf_pool:
+                            _n = _r.get('name', '')
+                            if _n and _n not in _excl_names and _core_food in _n:
+                                _pick = _r
+                                break
+                        if _pick and recommendations:
+                            recommendations[-1] = _pick
+                            print(f"[Agent] 重复追问保留食材[{_core_food}]: 补入 "
+                                  f"{_pick.get('name')}", flush=True)
+                    except Exception as _cf_e:
+                        print(f"[Agent] 重复追问食材补入失败: {_cf_e}", flush=True)
     except Exception as _be:
         print(f"[Agent] 食材均衡失败: {_be}", flush=True)
 
@@ -1766,6 +1869,187 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
     if len(recommendations) > top_n:
         print(f"[Agent] 数量兜底: {len(recommendations)}->{top_n}道", flush=True)
         recommendations = recommendations[:top_n]
+
+    # — 荤素拆分数量强制：用户点名"两个荤两个素"时，出口保证荤素各若干道。
+    #   先按目标把荤菜/素菜挑齐（同类内保持原顺序=相关度序），某类不足时
+    #   从全库按对应类型检索补足（过健康约束），仍不足再用富余类兜底。 —
+    if _meat_veg_target and recommendations:
+        _mn_t, _vn_t = _meat_veg_target
+        _meats = [r for r in recommendations if _is_meat_recipe(r)]
+        _vegs = [r for r in recommendations if not _is_meat_recipe(r)]
+        _new = _meats[:_mn_t] + _vegs[:_vn_t]
+        _seen = {r.get('name', '') for r in _new if r.get('name')}
+        _filters2 = dict(dm.get_search_filters()) if dm else {}
+        _pool2 = []
+        try:
+            # 先按缺口类型检索补足：荤/素缺几道就补几道，优先凑齐目标比例，
+            # 而不是用富余类硬凑（否则"两个荤两个素"会因库里素菜少而变成3荤1素）。
+            for _q in ('素菜 蔬菜 清淡 凉拌 蒸菜 汤', '荤菜 肉 家常 红烧 炖'):
+                try:
+                    _pool2 += retriever.search(_q, top_k=25, filters=_filters2)
+                except Exception:
+                    pass
+            if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
+                try:
+                    _pool2 = (engine.filter_by_constraints(_pool2, user_ids=user_ids)
+                              if user_ids else engine.filter_by_constraints(_pool2, user_id=user_id))
+                except Exception:
+                    pass
+            for _r in _pool2:
+                if len(_new) >= top_n:
+                    break
+                _rn = _r.get('name', '')
+                if not _rn or _rn in _seen:
+                    continue
+                _cur_m = sum(1 for x in _new if _is_meat_recipe(x))
+                _cur_v = len(_new) - _cur_m
+                _is_m = _is_meat_recipe(_r)
+                if _is_m and _cur_m >= _mn_t:
+                    continue          # 荤已够，不再加荤
+                if not _is_m and _cur_v >= _vn_t:
+                    continue          # 素已够，不再加素
+                _new.append(_r)
+                _seen.add(_rn)
+        except Exception as _me:
+            print(f"[Agent] 荤素补齐失败: {_me}", flush=True)
+        # 目标比例已凑齐但总道数仍不足 top_n → 用富余类补齐（保数量不缩水）
+        _cur_m = sum(1 for x in _new if _is_meat_recipe(x))
+        _cur_v = len(_new) - _cur_m
+        if (_cur_m >= _mn_t and _cur_v >= _vn_t) and len(_new) < top_n:
+            for _r in (_meats[_mn_t:] + _vegs[_vn_t:]):
+                if len(_new) >= top_n:
+                    break
+                _rn = _r.get('name', '')
+                if _rn and _rn not in _seen:
+                    _new.append(_r)
+                    _seen.add(_rn)
+        # 目标比例无法凑齐（该类型被忌口全滤）→ 尽量保数量
+        if len(_new) < top_n:
+            for _r in _pool2:
+                if len(_new) >= top_n:
+                    break
+                _rn = _r.get('name', '')
+                if _rn and _rn not in _seen:
+                    _new.append(_r)
+                    _seen.add(_rn)
+        recommendations = _new[:top_n]
+        print(f"[Agent] 荤素数量出口: {sum(1 for r in recommendations if _is_meat_recipe(r))}荤"
+              f"/{sum(1 for r in recommendations if not _is_meat_recipe(r))}素 -> "
+              f"{[r.get('name') for r in recommendations]}", flush=True)
+
+    # — 汤/羹/粥类数量上限：普通点餐时（非饮品模式、非纯汤宴），"有荤有素有汤"是混搭需求，
+    #   但 Agent 检索可能收敛到"家常汤"，导致整桌全是汤/热羹（搭配失调、也扣全热菜分）。
+    #   出口把汤粥羹类压到上限以内，缺口用非汤类的家常荤素菜补足（过健康约束）。 —
+    if not _drink_mode and not _all_soup_intent and recommendations:
+        try:
+            _soup_cap = max(1, (top_n + 2) // 3)   # 5道→2, 4道→2, 3道→1
+            _soups = [r for r in recommendations if _is_drink_recipe(r)]
+            _non_soups = [r for r in recommendations if not _is_drink_recipe(r)]
+            if len(_soups) > _soup_cap:
+                _keep = _soups[:_soup_cap]        # 保留最相关的前几道汤
+                _seen = {r.get('name', '') for r in _keep if r.get('name')}
+                _new = _keep + [r for r in _non_soups
+                                if r.get('name', '') not in _seen][:top_n - len(_keep)]
+                _seen |= {r.get('name', '') for r in _new if r.get('name')}
+                if len(_new) < top_n:
+                    _sfilters = dict(dm.get_search_filters()) if dm else {}
+                    _spool = []
+                    try:
+                        _spool = retriever.search(
+                            '家常菜 荤素搭配 炒 蒸 炖 凉拌 时蔬 下饭菜', top_k=25, filters=_sfilters)
+                    except Exception:
+                        pass
+                    if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
+                        try:
+                            _spool = (engine.filter_by_constraints(_spool, user_ids=user_ids)
+                                      if user_ids else engine.filter_by_constraints(_spool, user_id=user_id))
+                        except Exception:
+                            pass
+                    for _r in _spool:
+                        if len(_new) >= top_n:
+                            break
+                        _rn = _r.get('name', '')
+                        if _rn and _rn not in _seen and not _is_drink_recipe(_r):
+                            _new.append(_r)
+                            _seen.add(_rn)
+                # 全热无冷时补一道凉拌/凉菜：家常桌"荤素+冷热"搭配更合理，
+                # 避免"有荤有素有汤"整桌热菜（汤/蒸/炖）仍被判定搭配失调。
+                # 直接用"凉拌/沙拉/冰/冻/醉/糟"等关键词扫描全库，比语义检索更可靠
+                # （语义检索"凉拌菜"常命中"粉丝/木耳"邻居，反而抓不到真正的凉菜）。
+                if _new and not any(_is_cold_recipe(r) for r in _new):
+                    # 冷菜候选：优先"菜名即凉菜"（凉拌/凉菜/沙拉/冷盘/刺身/糟卤），
+                    # 次选仅步骤含冰/冻/冷（如冷藏甜品）——避免把"秋梨膏"这类当冷盘端上桌。
+                    def _cold_rank(x: Dict) -> int:
+                        _n = x.get('name', '') or ''
+                        if any(k in _n for k in ('凉拌', '凉菜', '沙拉', '冷盘', '刺身', '糟')):
+                            return 0
+                        return 1
+                    _cold_pool = [x for x in retriever.recipes
+                                  if x.get('name') and _is_cold_recipe(x)]
+                    _cold_pool.sort(key=_cold_rank)
+                    if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
+                        try:
+                            _cold_pool = (engine.filter_by_constraints(_cold_pool, user_ids=user_ids)
+                                          if user_ids else engine.filter_by_constraints(_cold_pool, user_id=user_id))
+                        except Exception:
+                            pass
+                    for _r in _cold_pool:
+                        if any(_is_cold_recipe(x) for x in _new):
+                            break
+                        _rn = _r.get('name', '')
+                        if not _rn or _rn in _seen or _is_drink_recipe(_r):
+                            continue
+                        if len(_new) >= top_n:
+                            _new[-1] = _r      # 换掉最后一道非汤菜，保持总数
+                        else:
+                            _new.append(_r)
+                        _seen.add(_rn)
+                        break
+                if _new:
+                    recommendations = _new[:top_n]
+                    print(f"[Agent] 汤类数量上限: {[r.get('name') for r in recommendations]}", flush=True)
+        except Exception as _se:
+            print(f"[Agent] 汤类上限失败: {_se}", flush=True)
+
+    # — 饮品模式出口：用户"喝点什么/想喝饮品"时，保证推荐以汤/粥/羹/茶/汁等可喝菜品为主，
+    #   不足时从全库按饮品检索补足（过健康约束），避免"能喝点什么"却推了一堆红烧肉硬菜。 —
+    if _drink_mode:
+        try:
+            _drinks = [r for r in recommendations if _is_drink_recipe(r)]
+            _non_drinks = [r for r in recommendations if not _is_drink_recipe(r)]
+            _need = min(3, top_n)
+            if len(_drinks) < _need:
+                _dfilters = dict(dm.get_search_filters()) if dm else {}
+                _dpool = retriever.search('汤 粥 羹 饮品 果汁 茶 甜品 奶昔', top_k=30, filters=_dfilters)
+                _dpool = [r for r in _dpool if _is_drink_recipe(r)]
+                if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
+                    try:
+                        _dpool = (engine.filter_by_constraints(_dpool, user_ids=user_ids)
+                                  if user_ids else engine.filter_by_constraints(_dpool, user_id=user_id))
+                    except Exception:
+                        pass
+                _seen = {r.get('name', '') for r in recommendations if r.get('name')}
+                _new_recs = list(_drinks)
+                for _r in _dpool:
+                    if len(_new_recs) >= _need:
+                        break
+                    _n = _r.get('name', '')
+                    if _n and _n not in _seen:
+                        _new_recs.append(_r)
+                        _seen.add(_n)
+                # 仍不足则用原有非饮品菜补齐（保数量、不空推）
+                for _r in _non_drinks:
+                    if len(_new_recs) >= top_n:
+                        break
+                    _n = _r.get('name', '')
+                    if _n and _n not in _seen:
+                        _new_recs.append(_r)
+                        _seen.add(_n)
+                if _new_recs:
+                    recommendations = _new_recs[:top_n]
+                    print(f"[Agent] 饮品模式出口: {[r.get('name') for r in recommendations]}", flush=True)
+        except Exception as _de:
+            print(f"[Agent] 饮品模式失败: {_de}", flush=True)
 
     # 如果Agent没给出回复，构造默认回复
     if not response_text:
@@ -1922,13 +2206,20 @@ def _focus_food(s: str) -> str:
     """从清洗后的检索词里剥离数量词/口语残词，锚定核心食材/菜品词。
 
     复刻 _agentic_recommend 中 _core_food 的稳健提取思路：先剥时间词与口语动词前缀，
-    再去掉结尾的"来/换/点/要"＋数量＋"道/菜/碗/盘/份"。
+    再剥数量短语（无论出现在开头还是结尾："再要三道土豆" -> "土豆"、
+    "土豆还是要三道" -> "土豆"），最后去掉"还是/再要"等夹层连接词。
+    这样用户换措辞重复追问同一食材时，_detect_repeat 能稳定识别。
     """
     if not s:
         return ''
     _cf = re.sub(r'^\s*(?:今晚|今天|明天|中午|晚上|早上|下午|今|明|夜|\d+点|刚|刚刚)+', '', s)
-    _cf = re.sub(r'^(就|想|要|来|换|点|整|弄|做|吃|喝|上|配|先|再|还是|再来)+', '', _cf)
+    _cf = re.sub(r'^(就|想|要|来|换|点|整|弄|做|吃|喝|上|配|先|再|还是|再来|想要|需要)+', '', _cf)
+    # 开头数量短语（"三道土豆" -> "土豆"），量词后必须还有汉字，避免误删菜名主体
+    _cf = re.sub(r'^[一二两三四五六七八九十两]?\d*?(?:道|菜|碗|盘|份|个)(?=[\u4e00-\u9fff])', '', _cf)
+    # 结尾数量短语（"土豆还是要三道" -> "土豆还是要"）
     _cf = re.sub(r'(?:来|换|点|要|上|再)?[一二两三四五六七八九十两]?\d*?(?:道|菜|碗|盘|份|个)?$', '', _cf)
+    # 夹层连接词（"土豆还是要" -> "土豆"）
+    _cf = re.sub(r'(?:还是|再要|再来|想要|需要|还要|先来|再来点)+', '', _cf)
     _cf = re.sub(r'[，。、,;；!！?？\s]+', '', _cf).strip()
     return _cf if 2 <= len(_cf) <= 8 else ''
 
@@ -2230,7 +2521,14 @@ def _handler_detail(ctx: DialogContext):
         target = None
     # 1c) 语义回退：仍未定位到菜名时，把整句关键片段交给检索器，从候选里挑与
     #     关键片段关联最强的一个，避免"可乐鸡翅"命中毫不相干的"红糖姜片干"。
-    if target is None:
+    #     但"位置/序数指代"（第一道/最后一道/第二个/上一个）不能走语义回退——
+    #     否则"第一道菜怎么做"会被检索命中含"菜"字的无关菜（如"翡翠白菜饺"），
+    #     必须先承接上下文按顺序取对应那道菜（见步骤2）。
+    _is_pos_ref = re.search(r'第[一二两三四五六七八九十百\d]+\s*(?:道|个|盘|碗|份)'
+                            r'|最后[一二]?\s*(?:道|个|盘|碗|份)'
+                            r'|上[一二]?\s*个'
+                            r'|第一|首个|头一个', message)
+    if target is None and not _is_pos_ref:
         reduced = _detail_reduced or message
         if reduced:
             if len(reduced) <= 6:
@@ -2269,11 +2567,32 @@ def _handler_detail(ctx: DialogContext):
         if dm is not None:
             cand_names = (getattr(dm, 'last_recommendation', None)
                           or (dm.recommended_recipes[-1:] if dm.recommended_recipes else []))
-        for name in reversed(cand_names):
-            r = retriever.get_recipe_by_name(name)
-            if r:
-                target = r
-                break
+        # 2a) 序数指代："第一道/第2个/最后一道"等，从当前方案按顺序取对应那道菜，
+        #     避免"第一道菜怎么做"被默认解析成方案里的最后一道（原实现反向取尾，指代错乱）。
+        if cand_names:
+            _idx = None
+            _om = re.search(r'第([一二两三四五六七八九十百]+|\d{1,2})\s*(?:道|个|盘|碗|份)?\s*(?:菜)?', message)
+            if _om:
+                _CN = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+                       '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+                _nm = _om.group(1)
+                _n = _CN.get(_nm) if _nm in _CN else (int(_nm) if _nm.isdigit() else None)
+                if _n is not None and 1 <= _n <= len(cand_names):
+                    _idx = _n - 1
+            elif re.search(r'最后\s*[一]?\s*(?:道|个|盘|碗|份)?\s*(?:菜)?', message):
+                _idx = len(cand_names) - 1
+            elif re.search(r'第一|首个|头一个', message):
+                _idx = 0
+            if _idx is not None and 0 <= _idx < len(cand_names):
+                _r = retriever.get_recipe_by_name(cand_names[_idx])
+                if _r:
+                    target = _r
+        if target is None:
+            for name in reversed(cand_names):
+                r = retriever.get_recipe_by_name(name)
+                if r:
+                    target = r
+                    break
     if target is None:
         ctx.response_text = "请告诉我您想了解哪道菜的做法（例如“怎么做【菜名】”）。"
         ctx.recommendations = []
@@ -2429,7 +2748,8 @@ def _handler_more(ctx: DialogContext):
 
     # 自纠错：用户重复追问上一句，且上一轮（空/单调/违规）时，主动承认并纠偏
     _hint = _last_issue_hint(dm)
-    if _hint and _detect_repeat(dm, message, ctx.intent):
+    _repeat = _detect_repeat(dm, message, ctx.intent) if dm else False
+    if _hint and _repeat:
         ctx.self_correct_hint = _hint
 
     # "多吃几道/再多来点/来一桌"等表达 → 返回更多道菜
@@ -2447,6 +2767,8 @@ def _handler_more(ctx: DialogContext):
         user_message=agent_message, user_id=user_id, user_ids=user_ids,
         dm=dm, retriever=retriever, engine=engine, llm=llm,
         top_n=top_n,
+        force_skip_merge=_repeat,
+        raw_user_message=message,
     )
     ctx.response_text = agent_result['response']
     ctx.recommendations = agent_result['recommendations']
@@ -2481,6 +2803,33 @@ def _handler_vague(ctx: DialogContext):
                 f"营养搭配和多人配餐。如果你想吃的方面，随时告诉我，比如「天冷了想吃点暖身的」「想吃火锅」～")
         ctx.recommendations = []
         return
+
+    # 加餐/饮品："能喝点什么/想喝杯奶茶/来碗汤"等，即使被 LLM 误判为模糊查询，
+    # 也直接给出汤/粥/羹/茶等可喝菜品，而不是推一堆硬菜。
+    if re.search(r'喝点什么|喝什么|喝点|喝些|想喝|要喝|喝杯|喝一杯|来杯|来碗汤|喝汤|想喝汤'
+                 r'|饮品|饮料|果汁|奶茶|豆浆|酸奶|豆奶|汤水|下午茶|糖水|炖汤|煲汤|茶水|泡茶'
+                 r'|奶昔|酸梅汤|绿豆汤|喝的', message):
+        _df = dm.get_search_filters() if dm else {}
+        try:
+            _dp = retriever.search('汤 粥 羹 饮品 果汁 茶 甜品 奶昔', top_k=20, filters=_df)
+            _dp = [r for r in _dp if _is_drink_recipe(r)]
+            if user_ids:
+                _dp = engine.filter_by_constraints(_dp, user_ids=user_ids)
+            elif user_id:
+                _dp = engine.filter_by_constraints(_dp, user_id=user_id)
+            if not _dp:  # 偏好过滤过严 → 无过滤兜底，避免空推
+                _dp = retriever.search('汤 粥 羹 饮品 果汁 茶 甜品 奶昔', top_k=20, filters=None)
+                _dp = [r for r in _dp if _is_drink_recipe(r)]
+            if _dp:
+                ctx.recommendations = _dp[:5]
+                recipe_names = [r['name'] for r in ctx.recommendations]
+                dm.add_recommended_recipes(recipe_names)
+                ctx.response_text = (
+                    f"下午来点喝的，给你配了几款：{('、'.join(recipe_names))}～"
+                    f"想喝凉的热的、或加别的料，随时跟我说～")
+                return
+        except Exception as _ve:
+            print(f"[Agent] 饮品模糊分支失败: {_ve}", flush=True)
 
     if dm.recommended_recipes:
         recipe_names = dm.recommended_recipes[-5:]
@@ -2987,6 +3336,14 @@ def dialog():
             print(f"[agent] 未注册意图 '{intent}'，回退到检索·推荐 Agent")
             intent = 'recommend'
 
+        # 加餐/饮品强意图："能喝点什么/想喝杯奶茶/来碗汤"等，即使被 LLM 误判为模糊查询，
+        # 也要进推荐 Agent 的饮品模式（_agentic_recommend 内按汤/粥/羹/茶过滤出口），
+        # 而不是落到 _handler_vague 去推一堆硬菜。
+        if re.search(r'喝点什么|喝什么|喝点|喝些|想喝|要喝|喝杯|喝一杯|来杯|来碗汤|喝汤|想喝汤'
+                     r'|饮品|饮料|果汁|奶茶|豆浆|酸奶|豆奶|汤水|下午茶|糖水|炖汤|煲汤|茶水|泡茶'
+                     r'|奶昔|酸梅汤|绿豆汤|喝的', message):
+            intent = 'recommend'
+
         # 将本轮提取的特殊人群同步进约束引擎档案，保证 filter_by_constraints / 验证生效
         _sync_health_to_engine(dm, engine, user_id, user_ids)
 
@@ -3128,7 +3485,7 @@ def dialog():
                 _pre_before = len(recommendations)
                 recommendations = retriever._apply_filters(recommendations, _pf)
                 print(f"[dialog] 偏好硬过滤: {_pre_before}->{len(recommendations)} 道", flush=True)
-                # 用户显式指定"只吃N道/来N道"时，尊重该数量，不强行补足到5道
+                # 用户显式指定"只吃N道/来N道/两个荤两个素"时，尊重该数量，不强行补足到5道
                 _req_n = 0
                 try:
                     _rm = re.search(
@@ -3139,6 +3496,15 @@ def dialog():
                     if _rm:
                         _g = _rm.group(1)
                         _req_n = _RN.get(_g) if _g in _RN else int(_g)
+                    else:
+                        # 荤素拆分数量也是明确数量："两个荤两个素" -> 总数4，别补成5道
+                        _mm2 = re.search(r'([一二两三四五六七八九十两]|\d{1,2})\s*个?\s*(?:荤|肉)\s*(?:菜)?', message)
+                        _vm2 = re.search(r'([一二两三四五六七八九十两]|\d{1,2})\s*个?\s*素\s*(?:菜)?', message)
+                        if _mm2 and _vm2:
+                            _mn2 = _RN.get(_mm2.group(1)) if _mm2.group(1) in _RN else int(_mm2.group(1))
+                            _vn2 = _RN.get(_vm2.group(1)) if _vm2.group(1) in _RN else int(_vm2.group(1))
+                            if 1 <= _mn2 <= 8 and 1 <= _vn2 <= 8:
+                                _req_n = _mn2 + _vn2
                 except Exception:
                     _req_n = 0
                 _target_n = _req_n if 1 <= _req_n <= 12 else 5
