@@ -265,21 +265,66 @@ class ConstraintEngine:
         
         import re
         
-        # 任何过敏原出现在菜谱中则不通过
+        # 过敏原只按字面匹配会漏掉常见写法差异：如用户写的过敏是"鸡蛋"，
+        # 但菜谱食材写的是"全蛋液/蛋清/蛋黄"，字面不含"鸡蛋"就放行了——
+        # 这会真实漏过敏。对所有过敏原，同时检测其常见子词/别名变体：
+        # 变体命中即视为该过敏原出现（具名过敏原 + 子词双向判断）。
         for allergy in allergy_set:
-            if allergy not in all_text:
-                continue
-            
-            # 中文过敏原（含中文字符）：直接子串匹配（中文单字不会误匹配）
-            if re.search(r'[\u4e00-\u9fff]', allergy):
-                return False
-            
-            # 英文/数字过敏原：词边界匹配（避免"A"误匹配"A料"）
-            pattern = r'(?:^|[^a-zA-Z0-9])' + re.escape(allergy) + r'(?:$|[^a-zA-Z0-9])'
-            if re.search(pattern, all_text):
-                return False
+            # 1) 过敏原字面出现
+            if allergy in all_text:
+                pass
+            elif re.search(r'[\u4e00-\u9fff]', allergy):
+                # 中文过敏原用子词展开匹配（"鸡蛋" → 全蛋液/蛋液/蛋清/蛋黄…）
+                _variants = self._allergy_variants(allergy)
+                if not any(v in all_text for v in _variants):
+                    continue
+            else:
+                # 英文/数字过敏原：词边界匹配（避免"A"误匹配"A料"）
+                pattern = r'(?:^|[^a-zA-Z0-9])' + re.escape(allergy) + r'(?:$|[^a-zA-Z0-9])'
+                if not re.search(pattern, all_text):
+                    continue
+            # 走到这说明该过敏原（或其变体）出现在菜谱中 → 拦截
+            return False
         
         return True
+    
+    def _allergy_variants(self, allergy: str) -> list:
+        """返回某过敏原在菜谱中的常见写法/子词变体，用于更可靠地拦截过敏。
+
+        用户声明的过敏名（如"鸡蛋"）与菜谱食材写法（如"全蛋液/蛋清/蛋白"）常不一致，
+        仅靠字面子串匹配（"鸡蛋" not in "全蛋液"）会漏拦真实过敏，属于不可接受的安全
+        缺口。这里用"显式变体表 + 菜谱侧通用去修饰词归一"双重兜底：
+          - 显式表：为高风险过敏原补全真实出现的形态；
+          - 通用回退：对未知过敏原，把"全X/生X/X丝/X片"等词缀形态也纳入匹配，
+            尽量覆盖"牛奶→全脂奶"这类改写。
+        """
+        EXPLICIT = {
+            '鸡蛋': ['蛋', '鸡蛋', '全蛋液', '蛋液', '蛋清', '蛋白', '蛋黄', '蛋白霜', '溏心蛋',
+                      '蛋皮', '蛋花', '蛋饺', '蛋卷', '鹅蛋', '鹌鹑蛋', '鸭蛋', '鸽蛋',
+                      '咸蛋', '茶叶蛋', '卤蛋', '煎蛋', '炒蛋', '蒸蛋', '荷包蛋', '蛋糕',
+                      '腌蛋黄'],
+            '牛奶': ['牛奶', '全脂奶', '脱脂奶', '低脂奶', '酸奶', '奶粉', '炼乳', '淡奶油',
+                      '奶油', '黄油', '奶酪', '芝士', '乳清', '鲜奶', '奶油蘑菇'],
+            '花生': ['花生', '花生米', '花生仁', '红衣花生', '花生酱', '花生碎'],
+            '虾':   ['虾', '基围虾', '虾仁', '虾米', '虾皮', '明虾', '对虾', '北极虾',
+                     '小龙虾', '虾滑', '虾丸', '青虾'],
+            '蟹':   ['蟹', '螃蟹', '大闸蟹', '蟹肉', '蟹黄', '蟹棒', '梭子蟹', '炒蟹'],
+            '鱼':   ['鱼', '鱼肉', '鱼片', '鱼丸', '鱼汤', '鲈鱼', '鲫鱼', '草鱼', '带鱼',
+                     '三文鱼', '鳕鱼', '黄鱼', '鲤鱼', '鲢鱼', '鱼籽'],
+            '大豆': ['大豆', '黄豆', '豆浆', '豆腐', '豆腐干', '腐竹', '豆豉', '毛豆',
+                     '酱油', '纳豆', '豆皮', '油豆'],
+        }
+        if allergy in EXPLICIT:
+            return EXPLICIT[allergy]
+        # 通用回退：把"鸡/全/鲜/生 + 核心词"以及"核心词+ 液/清/黄/白/仁/粉"考虑进来，
+        # 仅作补充（保守，避免过度误伤），真正的高风险过敏原靠上面的显式表兜底。
+        core = allergy
+        variants = {allergy}
+        for p in ('全', '鲜', '生', '冻'):
+            variants.add(p + core)
+        for s in ('液', '清', '黄', '白', '仁', '粉'):
+            variants.add(core + s)
+        return [v for v in variants if v]
     
     def _check_disease(self, recipe: Dict, user_profile: Dict) -> List[str]:
         """

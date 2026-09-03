@@ -1228,6 +1228,26 @@ def _is_cold_recipe(recipe: Dict) -> bool:
     return any(k in _t for k in _COLD_KEYWORDS)
 
 
+# 加餐/饮品意图判定词（"能喝点什么/想喝杯奶茶/来碗汤/下午茶"等）。
+_DRINK_INTENT_RX = re.compile(
+    r'喝点什么|喝什么|喝点|喝些|想喝|要喝|喝杯|喝一杯|来杯|来碗汤|喝汤|想喝汤'
+    r'|饮品|饮料|果汁|奶茶|豆浆|酸奶|豆奶|汤水|下午茶|糖水|炖汤|煲汤|茶水|泡茶'
+    r'|奶昔|酸梅汤|绿豆汤|喝的')
+
+
+def _is_drink_query(message: str) -> bool:
+    """判断是否为"求推荐饮品"类请求。
+
+    关键：若消息明确在问"怎么做/做法/步骤"（如"绿豆汤怎么做"），这是菜谱做法查询，
+    不是要一杯饮品——必须排除，否则会把做法查询误路由成推荐（曾实测被劫持）。
+    做法查询（怎么做/怎么做菜/如何做/做法/步骤/怎么煮/怎么蒸…）一律不算饮品意图。
+    """
+    if not re.search(r'怎么做|怎么制作|怎么弄|如何做|做法|步骤|怎么烧|怎么煮|怎么蒸|'
+                     r'怎么煎|怎么炸|怎么炖|详细做法|烹饪方法', message):
+        return bool(_DRINK_INTENT_RX.search(message))
+    return False
+
+
 def _trim_by_relevance(recommendations: list, core_query: str, retriever, max_n: int = 5,
                        filters: Optional[Dict] = None,
                        engine=None, user_id: str = None, user_ids: list = None) -> list:
@@ -1452,12 +1472,10 @@ def _agentic_recommend(user_message: str, user_id: str = None, user_ids: list = 
 
     # 加餐/饮品意图："下午有点饿，能喝点什么/想喝杯奶茶/来碗汤"等。
     # 命中后进入"饮品模式"：检索以汤粥羹茶为主、出口过滤为可喝的菜，避免推到硬菜。
+    # 用 _is_drink_query 统一判定（自带"怎么做/做法"负向排除，绿豆汤做法查询不劫持）。
     try:
         _drink_src = raw_user_message if raw_user_message else user_message
-        _drink_mode = bool(re.search(
-            r'喝点什么|喝什么|喝点|喝些|想喝|要喝|喝杯|喝一杯|来杯|来碗汤|喝汤|想喝汤'
-            r'|饮品|饮料|果汁|奶茶|豆浆|酸奶|豆奶|汤水|下午茶|糖水|炖汤|煲汤|茶水|泡茶'
-            r'|奶昔|酸梅汤|绿豆汤|喝的', _drink_src))
+        _drink_mode = _is_drink_query(_drink_src)
         if _drink_mode and not search_query:
             search_query = '汤 粥 羹 饮品 果汁 茶 甜品'
     except Exception:
@@ -2806,9 +2824,8 @@ def _handler_vague(ctx: DialogContext):
 
     # 加餐/饮品："能喝点什么/想喝杯奶茶/来碗汤"等，即使被 LLM 误判为模糊查询，
     # 也直接给出汤/粥/羹/茶等可喝菜品，而不是推一堆硬菜。
-    if re.search(r'喝点什么|喝什么|喝点|喝些|想喝|要喝|喝杯|喝一杯|来杯|来碗汤|喝汤|想喝汤'
-                 r'|饮品|饮料|果汁|奶茶|豆浆|酸奶|豆奶|汤水|下午茶|糖水|炖汤|煲汤|茶水|泡茶'
-                 r'|奶昔|酸梅汤|绿豆汤|喝的', message):
+    # 但"绿豆汤怎么做"这类做法查询不在此列（交给 _handler_detail）。
+    if _is_drink_query(message):
         _df = dm.get_search_filters() if dm else {}
         try:
             _dp = retriever.search('汤 粥 羹 饮品 果汁 茶 甜品 奶昔', top_k=20, filters=_df)
@@ -3133,7 +3150,8 @@ def _sync_health_to_engine(dm, engine, user_id, user_ids):
         return
     groups = list(dm.user_preferences.get('special_groups', []) or [])
     diseases = list(dm.user_preferences.get('diseases', []) or [])
-    if not groups and not diseases:
+    allergies = list(dm.user_preferences.get('allergies', []) or [])
+    if not groups and not diseases and not allergies:
         return
     targets = []
     if user_ids:
@@ -3157,6 +3175,14 @@ def _sync_health_to_engine(dm, engine, user_id, user_ids):
         for d in diseases:
             if d not in cur_d:
                 cur_d.append(d)
+        # 之前只同步了特殊人群与疾病，漏了过敏——对话中用户新增的过敏
+        # （如"我虾过敏/鸡蛋过敏"）若不进引擎档案，filter_by_constraints 与
+        # 验证器读到的 allergies 为空，会漏拦含过敏原的菜（曾把"精致下午茶"
+        # 推荐给鸡蛋过敏用户）。这里一并回填。
+        cur_a = profile.setdefault('allergies', [])
+        for a in allergies:
+            if a and a not in cur_a:
+                cur_a.append(a)
 
 
 @app.route('/api/dialog', methods=['POST'])
@@ -3339,9 +3365,8 @@ def dialog():
         # 加餐/饮品强意图："能喝点什么/想喝杯奶茶/来碗汤"等，即使被 LLM 误判为模糊查询，
         # 也要进推荐 Agent 的饮品模式（_agentic_recommend 内按汤/粥/羹/茶过滤出口），
         # 而不是落到 _handler_vague 去推一堆硬菜。
-        if re.search(r'喝点什么|喝什么|喝点|喝些|想喝|要喝|喝杯|喝一杯|来杯|来碗汤|喝汤|想喝汤'
-                     r'|饮品|饮料|果汁|奶茶|豆浆|酸奶|豆奶|汤水|下午茶|糖水|炖汤|煲汤|茶水|泡茶'
-                     r'|奶昔|酸梅汤|绿豆汤|喝的', message):
+        # 但"绿豆汤怎么做"这类明确问做法的请求，仍要留给 ask_recipe_detail 处理，不劫持。
+        if _is_drink_query(message):
             intent = 'recommend'
 
         # 将本轮提取的特殊人群同步进约束引擎档案，保证 filter_by_constraints / 验证生效
@@ -3514,17 +3539,28 @@ def dialog():
                 if len(recommendations) < _target_n:
                     _core, _neg = _clean_search_query(message)
                     _seen = {r.get('name', '') for r in recommendations}
-                    # 先带偏好过滤补足；若因口味过滤过严仍不足，降级为无过滤全库检索
-                    # + 健康约束引擎过滤，保证不为凑数而硬塞违规菜、也不空手而归。
-                    _fill_pool = retriever.search((_core or '晚餐 家常'), top_k=15, filters=_pf)
-                    if len(_fill_pool) < (_target_n - len(recommendations)):
-                        _fill_pool = retriever.search((_core or '晚餐 家常'), top_k=20, filters=None)
+                    # 先带偏好过滤检索补足；补足池必须统一再过健康约束引擎
+                    # （过敏/疾病/特殊人群）——不能只在 filters=None 的降级分支过滤，
+                    # 否则 filters=_pf 分支会把含过敏原的菜填进来漏拦
+                    # （曾把含全蛋液的"酸奶小餐包"推荐给鸡蛋过敏用户）。
+                    _fill_pool = retriever.search((_core or '晚餐 家常'), top_k=20, filters=_pf)
+                    if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
                         try:
-                            if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
-                                _fill_pool = (engine.filter_by_constraints(_fill_pool, user_ids=user_ids)
-                                             if user_ids else engine.filter_by_constraints(_fill_pool, user_id=user_id))
+                            _fill_pool = (engine.filter_by_constraints(_fill_pool, user_ids=user_ids)
+                                          if user_ids else engine.filter_by_constraints(_fill_pool, user_id=user_id))
                         except Exception:
                             pass
+                    # 偏好过滤过严仍不足 → 降级为无偏好过滤全库检索 + 健康约束兜底，
+                    # 保证不为凑数塞违规菜、也不空手而归。
+                    if len(_fill_pool) < (_target_n - len(recommendations)):
+                        _fill_pool2 = retriever.search((_core or '晚餐 家常'), top_k=20, filters=None)
+                        if engine and (user_ids or (user_id and engine.user_profiles.get(user_id))):
+                            try:
+                                _fill_pool2 = (engine.filter_by_constraints(_fill_pool2, user_ids=user_ids)
+                                              if user_ids else engine.filter_by_constraints(_fill_pool2, user_id=user_id))
+                            except Exception:
+                                pass
+                        _fill_pool = _fill_pool2
                     for _r in _fill_pool:
                         if len(recommendations) >= _target_n:
                             break
