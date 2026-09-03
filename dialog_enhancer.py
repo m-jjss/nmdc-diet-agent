@@ -1199,6 +1199,19 @@ class DialogManager:
 
     def detect_intent(self, user_message: str, llm_client=None) -> str:
         """检测用户意图（LLM驱动，关键词回退）"""
+        # 偏好记忆回读查询：优先于 LLM，避免"你还记得我不吃什么吗/我有什么忌口来着"
+        # 这类问句被 LLM/关键词误判为菜谱详情或新推荐。
+        # 正则刻意只匹配"回读本人偏好+疑问词"，避免误伤"我不吃香菜"(设偏好，无疑问词)。
+        _message = (user_message or '').lower()
+        _mem = any(re.search(rx, _message) for rx in [
+            r'(?:还记得|记得|记住|回想|那你记得|你记得).{0,10}我(?:不?吃|过敏|忌口|不喝|不能吃|不爱吃|偏好|爱吃什么)',
+            r'我说过(?:不?吃|过敏|忌口|偏好).{0,8}(?:什么|啥|哪些|来着|吗)',
+            r'我(?:不?吃|过敏|忌口|不喝|不能吃|不爱吃|偏好).{0,8}(?:什么|啥|哪些|来着|吗)',
+            r'(?:我的|我)(?:忌口|过敏|偏好|口味).{0,8}(?:什么|啥|哪些|来着)',
+            r'我(?:有哪些|有些?|有什么|记得啥).{0,4}(?:过敏|忌口|偏好|不吃)(?:的)?(?:东西|食材)?(?:吗|来着|什么|哪些|啥)?',
+        ])
+        if _mem:
+            return 'ask_preferences'
         if llm_client is not None:
             try:
                 result = self._detect_intent_llm(user_message, llm_client)

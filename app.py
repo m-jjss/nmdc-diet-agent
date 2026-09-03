@@ -1,3 +1,20 @@
+"""
+方太个性化膳食规划系统 —— Flask 主应用入口。
+
+文件结构地图（自上而下）：
+  1. 初始化         资源限制、营养数据库加载、Flask 应用与协程
+  2. API 文档页     根路由 "/" 的可视化接口文档
+  3. 持久化记忆     `.dialog_store/` 按 user_id 落盘用户偏好，跨请求/重启可恢复
+  4. 工具函数       记忆回读识别(_is_memory_recall)、核心食材聚焦(_focus_food)、
+                    偏好冲突检测、检索裁剪与荤素/饮品/序数等专项解析
+  5. 业务 Handler   推荐/换菜/详情/营养/记忆回读等意图处理函数
+  6. 意图路由表     intent -> handler 映射
+  7. HTTP 路由      /api/dialog 与 /api/dialog/stream 两套对话入口（含记忆回读强锁定）
+  8. 二次校验出口    推荐结果最终约束复检与补足
+
+核心模块分层：app.py(编排) -> dialog_enhancer(意图/偏好) -> rag_retriever(检索)
+             -> constraint_engine(约束) -> result_verifier(验证) -> orchestrator(多Agent)
+"""
 import re
 import os
 
@@ -1246,6 +1263,23 @@ def _is_drink_query(message: str) -> bool:
                      r'怎么煎|怎么炸|怎么炖|详细做法|烹饪方法', message):
         return bool(_DRINK_INTENT_RX.search(message))
     return False
+
+
+# 记忆回读正则：仅匹配"回读本人偏好+疑问"，避免误伤"我不吃香菜"(设偏好，无疑问词)
+_MEMORY_RECALL_RXS = [
+    r'(?:还记得|记得|记住|回想|那你记得|你记得).{0,10}我(?:不?吃|过敏|忌口|不喝|不能吃|不爱吃|偏好|爱吃什么)',
+    r'我说过(?:不?吃|过敏|忌口|偏好).{0,8}(?:什么|啥|哪些|来着|吗)',
+    r'我(?:不?吃|过敏|忌口|不喝|不能吃|不爱吃|偏好).{0,8}(?:什么|啥|哪些|来着|吗)',
+    r'(?:我的|我)(?:忌口|过敏|偏好|口味).{0,8}(?:什么|啥|哪些|来着)',
+    r'我(?:有哪些|有些?|有什么|记得啥).{0,4}(?:过敏|忌口|偏好|不吃)(?:的)?(?:东西|食材)?(?:吗|来着|什么|哪些|啥)?',
+]
+
+
+def _is_memory_recall(message: str) -> bool:
+    """判断是否为"偏好记忆回读"查询（"你还记得我不吃什么吗"）而非偏好声明。"""
+    if not message:
+        return False
+    return any(re.search(rx, message.lower()) for rx in _MEMORY_RECALL_RXS)
 
 
 def _trim_by_relevance(recommendations: list, core_query: str, retriever, max_n: int = 5,
@@ -2498,6 +2532,45 @@ def _strip_detail_phrasing(message: str) -> str:
     return m
 
 
+def _handler_memory(ctx: DialogContext):
+    """偏好记忆 Agent：回读用户此前说过的忌口/过敏/偏好，组织成人话回答。
+
+    触发场景："你还记得我不吃什么吗""我有什么忌口来着""记得我过敏吗"。
+    若用户档案里有已记录的过敏/忌口/疾病/特殊人群/口味，如实回读；一条都没记录时，
+    诚实说明还没记录到，并引导用户补充——不编造、不硬凑。
+    """
+    dm = getattr(ctx, 'dm', None)
+    prefs = dm.user_preferences if dm else {}
+    parts = []
+
+    _allergies = list(prefs.get('allergies', []) or [])
+    _excluded = list(prefs.get('excluded_ingredients', []) or [])
+    _diseases = list(prefs.get('diseases', []) or [])
+    _groups = list(prefs.get('special_groups', []) or [])
+    _taste = prefs.get('taste_preference') or prefs.get('flavor_preference') or ''
+    _cuisine = prefs.get('cuisine_preference') or ''
+
+    if _allergies:
+        parts.append('过敏：' + '、'.join(_allergies))
+    if _excluded:
+        parts.append('忌口不吃：' + '、'.join(_excluded))
+    if _diseases:
+        parts.append('有慢性病管理：' + '、'.join(_diseases))
+    if _groups:
+        parts.append('每餐会照顾人群：' + '、'.join(_groups))
+    if _taste:
+        parts.append('口味偏好：' + _taste)
+    if _cuisine:
+        parts.append('偏爱的菜系：' + _cuisine)
+
+    if parts:
+        ctx.response_text = '当然记得～你告诉过我：' + '；'.join(parts) + '。之后推荐我都会优先规避这些。'
+    else:
+        ctx.response_text = ('目前你还没跟我提起过过敏或忌口呢。如果想要更贴合你的安排，'
+                             '可以告诉我比如"我鸡蛋过敏""不吃香菜""在减脂"这些～')
+    ctx.recommendations = []
+
+
 def _handler_detail(ctx: DialogContext):
     """菜谱详情 Agent：先给简略版，用户再追问"详细"时展开完整步骤。"""
     message = ctx.message.strip()
@@ -3124,6 +3197,7 @@ def _register_dialog_agents() -> None:
         'add_constraint': _handler_preference,
         'ask_nutrition': _handler_nutrition,
         'ask_recipe_detail': _handler_detail,
+        'ask_preferences': _handler_memory,
         'reject_recommendation': _handler_reject,
         'request_more': _handler_more,
         'vague_query': _handler_vague,
@@ -3279,40 +3353,55 @@ def dialog():
         # 矛盾检测必须在本轮偏好写入 dm 之前做快照：
         # 否则"我想吃红烧肉"提取出的 vegetarian=false 会覆盖素食标记，检测失效。
         _conflict_tip = _detect_preference_conflict(message, dm)
-        kw_preferences = dm.extract_preferences(message)  # 关键词基线（内部会写入）
-        llm_result = dm.detect_with_llm(message, llm_client=llm)
-        search_query = ""
-        if llm_result:
-            intent = llm_result.get('intent', 'recommend')
-            if llm_result.get('search_query'):
-                sq = str(llm_result['search_query']).strip()
-                if sq and sq.lower() != 'null':
-                    search_query = sq
-            if llm_result.get('preferences'):
-                # 关键：LLM 提取的偏好必须写入 dm，否则 get_search_filters() 拿不到排除词，
-                # 导致"不吃虾"等否定约束在检索/验证阶段全部失效
-                dm._update_preferences(llm_result['preferences'])
-                preferences = llm_result['preferences']
-            else:
-                preferences = kw_preferences
+        # 记忆回读标记：若为"你记得我不吃什么吗"这类查询，后续跳过排除词兜底写入，
+        # 且意图强锁定为 ask_preferences（不误入推荐、不污染记忆）。
+        _mem_recall = _is_memory_recall(message)
+        if _mem_recall:
+            # 记忆回读句（"你还记得我不吃什么吗"）是"查询本人偏好"，不是偏好声明。
+            # 不能跑 extract_preferences/detect_with_llm——否则会把句中的疑问词
+            # "什么吗/记得我"当排除食材写进档案，污染成"忌口不吃：香菜、什么吗"。
+            # 直接锁定意图走 _handler_memory，保持档案原样。（发现经过：实测记忆回读
+            # 后 excluded_ingredients 被混入"什么吗"，导致后续所有推荐被错误过滤。）
+            intent = 'ask_preferences'
+            preferences = dm.user_preferences or {}
+            search_query = ""
         else:
-            intent = dm.detect_intent(message)  # 关键词回退
-            preferences = kw_preferences
+            kw_preferences = dm.extract_preferences(message)  # 关键词基线（内部会写入）
+            llm_result = dm.detect_with_llm(message, llm_client=llm)
+            search_query = ""
+            if llm_result:
+                intent = llm_result.get('intent', 'recommend')
+                if llm_result.get('search_query'):
+                    sq = str(llm_result['search_query']).strip()
+                    if sq and sq.lower() != 'null':
+                        search_query = sq
+                if llm_result.get('preferences'):
+                    # 关键：LLM 提取的偏好必须写入 dm，否则 get_search_filters() 拿不到排除词，
+                    # 导致"不吃虾"等否定约束在检索/验证阶段全部失效
+                    dm._update_preferences(llm_result['preferences'])
+                    preferences = llm_result['preferences']
+                else:
+                    preferences = kw_preferences
+            else:
+                intent = dm.detect_intent(message)  # 关键词回退
+                preferences = kw_preferences
 
         # 道别强制路由："谢谢，再见/拜拜" 等告别语即使被 LLM 误判为 greet/recommend，
         # 也要回以道别话术，而不是再问一遍"想吃什么"。
         if re.search(r'再见|拜拜|回聊|下次见|下次聊|走了', message):
             intent = 'farewell'
         
-        # 兜底1：强制关键词提取排除食材，保证"不吃X"始终进入 excluded_ingredients
-        if not dm.user_preferences.get('excluded_ingredients'):
-            dm.extract_preferences(message)
-        # 兜底2：从原文解析否定/过敏排除（覆盖"对X过敏"等关键词未覆盖的表达）
-        _, neg_ex = _clean_search_query(message)
-        if neg_ex:
-            for e in neg_ex:
-                if e not in dm.user_preferences['excluded_ingredients']:
-                    dm.user_preferences['excluded_ingredients'].append(e)
+        # 兜底1+2：记忆回读句（"你记得我不吃什么吗"）是查询而非偏好声明，绝不能把里面的
+        # 疑问词("什么吗/记得我")误当排除食材写入档案——否则记忆会被污染成
+        # "忌口不吃：香菜、什么吗"，污染后续所有推荐。
+        if not _mem_recall:
+            if not dm.user_preferences.get('excluded_ingredients'):
+                dm.extract_preferences(message)
+            _, neg_ex = _clean_search_query(message)
+            if neg_ex:
+                for e in neg_ex:
+                    if e not in dm.user_preferences['excluded_ingredients']:
+                        dm.user_preferences['excluded_ingredients'].append(e)
 
         # 素食标记显式解除：只有用户明确说"不再吃素/恢复吃肉"才清除
         # （配合 vegetarian 单向保护，避免"想吃红烧肉"这种口误误清除长期素食设定）
@@ -3331,6 +3420,12 @@ def dialog():
             'ask_clarification': 'clarify',
         }
         intent = INTENT_ALIASES.get(intent, intent)
+
+        # 偏好记忆回读强锁定（最高优先级覆盖）：即使 LLM 把"你还记得我不吃什么吗"
+        # 误判成 set_preferences/recommend，也改判回 ask_preferences——否则会返回
+        # 一堆无关推荐，而非应答用户记忆里的忌口/过敏。
+        if intent != 'ask_preferences' and _is_memory_recall(message):
+            intent = 'ask_preferences'
 
         # 反问句强制覆盖（双保险）：如"这不是有辣的吗""不就有辣的吗"是用户对当前
         # 推荐的肯定性反问，绝不能被 LLM/关键词误判为否定推荐。已有推荐时统一走 confirm。
@@ -3730,6 +3825,12 @@ def dialog_stream():
                       'reject': 'reject_recommendation', 'set_preference': 'set_preferences'}
         intent = INTENT_SYN.get(intent, intent)
 
+        # 偏好记忆回读强锁定（最高优先级覆盖）：即使 LLM 的 detect_with_llm 把
+        # "你还记得我不吃什么吗"误判成 set_preferences/recommend，也要在此处改判回
+        # ask_preferences——否则会返回一堆无关推荐，而非应答用户记忆里的忌口/过敏。
+        if intent != 'ask_preferences' and _is_memory_recall(message):
+            intent = 'ask_preferences'
+
         # 强意图覆盖：明确询问"怎么做/做法/步骤/怎么制作"时锁定为菜谱详情意图，
         # 避免 LLM/关键词把"怎么做X"误判成推荐返回一堆新菜。
         # 上轮刚给过"简略版"时，用户说"详细讲讲/继续/好"等追问，同样进入菜谱详情。
@@ -3742,7 +3843,7 @@ def dialog_stream():
         # 专职 Agent 文本意图（菜谱详情/营养/简单交互等）：不进入推荐 generate，直接 dispatch 生成回复，
         # 保证 Gradio 流式接口也能正确响应"怎么做X"这类询问，以及"你好/谢谢/再见/模糊询问"
         # 这类交互话术——否则 greet/cancel/vague_query 会被误当成推荐请求返回一堆无关菜。
-        _interactive_intents = ('ask_recipe_detail', 'ask_nutrition',
+        _interactive_intents = ('ask_recipe_detail', 'ask_nutrition', 'ask_preferences',
                                 'greet', 'confirm', 'cancel', 'vague_query',
                                 'reject_recommendation', 'request_substitute', 'request_more')
         if intent in _interactive_intents and ORCHESTRATOR.has_handler(intent):

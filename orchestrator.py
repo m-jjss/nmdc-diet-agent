@@ -72,8 +72,9 @@ AGENT_ROLES: List[AgentRole] = [
     AgentRole(
         name="preference",
         title="偏好·约束 Agent",
-        description="提取并落库酱料/口味/排除食材等偏好与硬约束",
-        intents=["set_preferences", "set_preference", "modify_preferences", "add_constraint"],
+        description="提取并落库酱料/口味/排除食材等偏好与硬约束；回读用户记忆中的偏好/忌口/过敏",
+        intents=["set_preferences", "set_preference", "modify_preferences", "add_constraint",
+                 "ask_preferences"],
         uses_llm=True,
     ),
     _DEFAULT_RETRIEVER,  # recommend / request_more / request_substitute / reject / 默认兜底

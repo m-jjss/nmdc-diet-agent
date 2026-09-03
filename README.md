@@ -22,6 +22,8 @@
 
 - **自纠错机制** — 每轮对推荐做质量诊断，用户换措辞重复追问时识别并主动承认上一轮问题，同时更换搭配，实现"发现问题—自我纠正"闭环
 
+- **偏好记忆回读** — 识别"你还记得我不吃什么吗"等记忆核对疑问句，准确回读已沉淀的忌口/过敏/口味，且不将疑问词误写入档案污染记忆
+
 ## 快速开始
 
 ```bash
@@ -60,17 +62,24 @@ Python · Flask · DeepSeek · FAISS · sentence-transformers · Docker
 ## 项目结构
 
 ```
-├── app.py                  # Flask 主应用，API 路由 + Agent ReAct 循环
+├── app.py                  # Flask 主应用，API 路由 + Agent ReAct 循环（含偏好记忆回读）
 ├── chat.py                 # 终端对话界面（python chat.py 1）
 ├── llm_client.py           # LLM 客户端封装（DeepSeek + Function Calling）
 ├── rag_retriever.py        # RAG 检索器（FAISS 索引 + hash 回退）
 ├── constraint_engine.py    # 约束引擎（过敏/疾病/营养计算）
 ├── dialog_enhancer.py      # 对话管理器（意图识别/偏好/疾病提取）
 ├── result_verifier.py      # 结果验证器（幻觉/过敏/约束检测）
-├── gradio_app.py           # Gradio Web 前端界面
-├── eval.py                 # 竞赛自动评分脚本（基础/复杂/多轮/性能4维度，含25组对话用例）
-├── test_daily_dialog.py    # 日常场景多轮对话压力测试（10 组场景、39 轮）
+├── orchestrator.py         # 多 Agent 编排（偏好/检索/约束/验证分工）
+├── nutrition_planner.py    # 营养规划（Mifflin-St Jeor + 膳食平衡）
 ├── config.py               # 配置中心（环境变量 + 默认值）
+├── gradio_app.py           # Gradio Web 前端界面
+├── eval.py                 # 竞赛自动评分（基础/复杂/多轮/性能4维度，25组对话用例）
+├── eval_daily.py           # 日常对话回归脚本
+├── test_daily_dialog.py    # 日常场景多轮对话压力测试（10 组场景、39 轮）
+├── test_prefs.py           # 偏好提取回归脚本
+├── test_verify.py          # 约束验证回归脚本
+├── test_long_dialog.py     # 长对话一致性回归脚本
+├── gunicorn.conf.py        # 生产 WSGI 启动配置
 ├── requirements.txt        # Python 依赖
 ├── .env.example            # 环境变量模板
 ├── docker-compose.yml      # Docker Compose 编排
